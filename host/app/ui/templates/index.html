@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ settings.app_name }}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">CoreXY Chess Robot</p>
+        <h1>Autonomous Board Control</h1>
+        <p>FastAPI host, python-chess rules, JSON serial firmware bridge, and live WebSocket events.</p>
+      </div>
+      <div class="status" id="connection-status">Connecting…</div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Game State</h2>
+        <pre id="state">Loading…</pre>
+        <button id="new-game">New Game</button>
+      </article>
+
+      <article class="card">
+        <h2>Hardware</h2>
+        <div class="buttons">
+          <button data-action="/api/hardware/home">Home</button>
+          <button data-action="/api/hardware/park">Park</button>
+          <button data-action="/api/hardware/scan">Scan</button>
+        </div>
+        <pre id="hardware-log"></pre>
+      </article>
+
+      <article class="card">
+        <h2>Manual Move</h2>
+        <input id="uci" placeholder="e2e4" />
+        <button id="send-move">Apply Human Move</button>
+      </article>
+
+      <article class="card wide">
+        <h2>Events</h2>
+        <pre id="events"></pre>
+      </article>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
