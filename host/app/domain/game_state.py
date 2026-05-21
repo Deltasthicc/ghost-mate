@@ -6,17 +6,22 @@ from datetime import datetime, timezone
 import chess
 
 
+def make_game_id() -> str:
+    return datetime.now(timezone.utc).strftime("game-%Y%m%d-%H%M%S-%f")
+
+
 @dataclass
 class GameState:
     """Authoritative in-memory game state backed by python-chess."""
 
     board: chess.Board = field(default_factory=chess.Board)
-    game_id: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("game-%Y%m%d-%H%M%S"))
+    game_id: str = field(default_factory=make_game_id)
     robot_busy: bool = False
     last_error: str | None = None
 
     def new_game(self, fen: str | None = None) -> None:
         self.board = chess.Board(fen) if fen else chess.Board()
+        self.game_id = make_game_id()
         self.robot_busy = False
         self.last_error = None
 
@@ -24,14 +29,15 @@ class GameState:
         return [move.uci() for move in self.board.legal_moves]
 
     def push_uci(self, uci: str) -> chess.Move:
-        move = chess.Move.from_uci(uci)
+        clean_uci = uci.strip().lower()
+        move = chess.Move.from_uci(clean_uci)
         if move not in self.board.legal_moves:
-            raise ValueError(f"Illegal move for current position: {uci}")
+            raise ValueError(f"Illegal move for current position: {clean_uci}")
         self.board.push(move)
         return move
 
     def push_san(self, san: str) -> chess.Move:
-        move = self.board.parse_san(san)
+        move = self.board.parse_san(san.strip())
         self.board.push(move)
         return move
 
