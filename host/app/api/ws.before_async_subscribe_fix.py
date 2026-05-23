@@ -1,20 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from fastapi.encoders import jsonable_encoder
 
 router = APIRouter()
-
-
-async def maybe_await(value):
-    """Support both sync and async event-bus methods."""
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
 @router.websocket("/ws")
@@ -23,11 +14,9 @@ async def websocket_events(websocket: WebSocket) -> None:
 
     event_bus = websocket.app.state.events
     game = websocket.app.state.game
-    queue = None
+    queue = event_bus.subscribe()
 
     try:
-        queue = await maybe_await(event_bus.subscribe())
-
         await websocket.send_json(
             {
                 "type": "HELLO",
@@ -37,18 +26,19 @@ async def websocket_events(websocket: WebSocket) -> None:
 
         while True:
             event = await queue.get()
-            await websocket.send_json(jsonable_encoder(event))
+            await websocket.send_json(event)
 
     except WebSocketDisconnect:
+        # Normal client disconnect
         pass
 
     except asyncio.CancelledError:
+        # Normal shutdown path during server stop / reload
         pass
 
     finally:
-        if queue is not None:
-            with suppress(Exception):
-                await maybe_await(event_bus.unsubscribe(queue))
+        with suppress(Exception):
+            event_bus.unsubscribe(queue)
 
         with suppress(Exception):
             await websocket.close(code=1000)

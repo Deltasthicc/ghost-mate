@@ -10,7 +10,10 @@ class Settings(BaseSettings):
     app_name: str = "Autonomous CoreXY Chess Robot"
     host: str = "127.0.0.1"
     port: int = 8000
-    debug: bool = True
+    # Use APP_DEBUG instead of DEBUG. Many tools (PlatformIO, shells, etc.)
+    # may set DEBUG to non-boolean values like "release", which breaks
+    # Pydantic boolean parsing during test/app startup.
+    debug: bool = Field(default=True, validation_alias="APP_DEBUG")
 
     serial_port: str = "COM3"
     serial_baud: int = 115200

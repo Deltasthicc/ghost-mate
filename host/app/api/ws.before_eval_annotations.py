@@ -5,13 +5,12 @@ import inspect
 from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from fastapi.encoders import jsonable_encoder
 
 router = APIRouter()
 
 
 async def maybe_await(value):
-    """Support both sync and async event-bus methods."""
+    """Support both sync and async event-bus methods safely."""
     if inspect.isawaitable(value):
         return await value
     return value
@@ -37,12 +36,14 @@ async def websocket_events(websocket: WebSocket) -> None:
 
         while True:
             event = await queue.get()
-            await websocket.send_json(jsonable_encoder(event))
+            await websocket.send_json(event)
 
     except WebSocketDisconnect:
+        # Normal browser disconnect.
         pass
 
     except asyncio.CancelledError:
+        # Normal server shutdown/reload path.
         pass
 
     finally:

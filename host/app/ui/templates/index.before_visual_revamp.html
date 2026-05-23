@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ settings.app_name }}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero card">
+      <div class="hero-top">
+        <div class="brand">
+          <div class="logo">♞</div>
+          <div>
+            <p class="kicker">Ghost Mate</p>
+            <h1>Autonomous Chess Robot Control</h1>
+          </div>
+        </div>
+
+        <div class="top-actions">
+          <button id="theme-toggle" class="btn soft">🌙 Theme</button>
+          <button id="refresh-all" class="btn primary">↻ Refresh</button>
+          <span id="connection-status" class="status-pill"><i></i> Connecting</span>
+        </div>
+      </div>
+
+      <div class="hero-bottom">
+        <p>
+          Live dashboard for the FastAPI host, python-chess rules engine, JSON serial bridge,
+          ESP32 firmware, board sensors, robot motion service, and WebSocket events.
+        </p>
+
+        <div class="hero-buttons">
+          <button id="new-game" class="btn primary big">Start New Game</button>
+          <button id="scan-board-hero" class="btn soft big">Scan Board</button>
+        </div>
+
+        <div class="mini-system">
+          <div><span>Host</span><strong id="host-status">Checking</strong></div>
+          <div><span>WebSocket</span><strong id="ws-status">Connecting</strong></div>
+          <div><span>Clock</span><strong id="clock">--:--:--</strong></div>
+        </div>
+      </div>
+    </header>
+
+    <section class="stats">
+      <article class="card stat"><span>Turn</span><strong id="turn-value">--</strong><small id="turn-helper">Waiting</small></article>
+      <article class="card stat"><span>Legal Moves</span><strong id="legal-count">--</strong><small>python-chess</small></article>
+      <article class="card stat"><span>Status</span><strong id="game-status">--</strong><small id="game-result">No result</small></article>
+      <article class="card stat"><span>Robot</span><strong id="robot-status">--</strong><small id="robot-helper">Motion service</small></article>
+    </section>
+
+    <section class="layout">
+      <article class="card board-card">
+        <div class="section-head">
+          <div>
+            <p class="kicker">Board</p>
+            <h2>Live Position</h2>
+          </div>
+          <div class="button-row">
+            <button id="flip-board" class="btn tiny">Flip</button>
+            <button id="clear-selection" class="btn tiny">Clear</button>
+          </div>
+        </div>
+
+        <div class="board-zone">
+          <div class="rank-labels" id="rank-labels"></div>
+          <div id="chessboard" class="chessboard"></div>
+        </div>
+        <div class="file-labels" id="file-labels"></div>
+
+        <div class="selected-box">
+          <div>
+            <span>Selected move</span>
+            <strong id="selected-move">Click a piece, then a target square</strong>
+          </div>
+          <button id="submit-selected" class="btn soft">Submit</button>
+        </div>
+      </article>
+
+      <aside class="side">
+        <article class="card">
+          <p class="kicker">Human Move</p>
+          <h2>Move Input</h2>
+          <div class="move-input">
+            <input id="uci" placeholder="e2e4" maxlength="5" autocomplete="off" />
+            <button id="send-move" class="btn primary">Apply</button>
+          </div>
+          <p class="hint">Type UCI notation, or click a piece and target square. Promotions work as <code>e7e8q</code>.</p>
+          <div class="chips">
+            <button data-quick-move="e2e4">e2e4</button>
+            <button data-quick-move="d2d4">d2d4</button>
+            <button data-quick-move="g1f3">g1f3</button>
+            <button data-quick-move="c2c4">c2c4</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <p class="kicker">Game</p>
+          <h2>Readable State</h2>
+          <div class="info-list">
+            <div><span>Game ID</span><strong id="game-id">--</strong></div>
+            <div><span>Check</span><strong id="check-state">--</strong></div>
+            <div><span>FEN</span><code id="fen-value">--</code></div>
+          </div>
+        </article>
+
+        <article class="card">
+          <p class="kicker">Legal Moves</p>
+          <h2>Move Explorer</h2>
+          <input id="move-filter" class="search" placeholder="Filter legal moves..." />
+          <div id="legal-moves" class="move-list"></div>
+        </article>
+      </aside>
+    </section>
+
+    <section class="layout lower">
+      <article class="card">
+        <p class="kicker">Hardware</p>
+        <h2>Motion + Sensor Controls</h2>
+
+        <div class="hardware-grid">
+          <button class="hardware-btn" data-hardware="/api/hardware/home">⌂<span>Home</span></button>
+          <button class="hardware-btn" data-hardware="/api/hardware/park">Ⅱ<span>Park</span></button>
+          <button class="hardware-btn" data-hardware="/api/hardware/scan" data-scan="true">◇<span>Scan</span></button>
+        </div>
+
+        <div class="robot-box">
+          <h3>Robot Move Test</h3>
+          <p class="hint">Tests motion service only. In mock mode, it returns a fake firmware ACK.</p>
+          <div class="robot-form">
+            <label>Source <input id="robot-source" placeholder="g1" maxlength="2" /></label>
+            <label>Target <input id="robot-target" placeholder="f3" maxlength="2" /></label>
+            <label class="check"><input id="robot-capture" type="checkbox" /> Capture</label>
+            <button id="send-robot-move" class="btn primary">Send Robot Move</button>
+          </div>
+        </div>
+
+        <div class="terminal">
+          <div class="terminal-bar"><i></i><i></i><i></i><strong>Hardware Response</strong></div>
+          <pre id="hardware-log">No hardware command sent yet.</pre>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="section-head">
+          <div>
+            <p class="kicker">Sensors</p>
+            <h2>Hall Matrix Snapshot</h2>
+          </div>
+          <button id="refresh-snapshot" class="btn tiny">Refresh Snapshot</button>
+        </div>
+
+        <div class="sensor-summary">
+          <div><strong id="occupied-count">--</strong><span>occupied</span></div>
+          <div><strong id="sensor-timestamp">--</strong><span>timestamp</span></div>
+        </div>
+
+        <div id="sensor-grid" class="sensor-grid"></div>
+
+        <div class="legend">
+          <span><i class="white-dot"></i> White / negative</span>
+          <span><i class="black-dot"></i> Black / positive</span>
+          <span><i class="empty-dot"></i> Empty</span>
+        </div>
+      </article>
+    </section>
+
+    <section class="card events-card">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Live Stream</p>
+          <h2>Events + API Console</h2>
+        </div>
+        <div class="button-row">
+          <button id="clear-events" class="btn tiny">Clear Events</button>
+          <button id="toggle-raw" class="btn tiny">Toggle Raw State</button>
+        </div>
+      </div>
+
+      <div class="console-layout">
+        <div id="events" class="events"></div>
+        <pre id="state" class="raw-state hidden">Loading state...</pre>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
