@@ -1169,3 +1169,208 @@ body.dark .event {
 }
 
 /* === GhostMate clean chess-piece and annotation fix END === */
+
+
+/* Stockfish analysis panel */
+.engine-summary {
+  margin: 12px 0 10px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.48);
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+body.dark .engine-summary {
+  background: rgba(255,255,255,0.04);
+}
+
+.engine-move-list {
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.engine-move-card {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 12px 13px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.58);
+  color: var(--ink);
+  cursor: pointer;
+  transition: 0.16s ease;
+}
+
+body.dark .engine-move-card {
+  background: rgba(255,255,255,0.05);
+}
+
+.engine-move-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(31, 38, 135, 0.15);
+}
+
+.engine-rank {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  color: #fff;
+  background: linear-gradient(135deg, #7b73ff, #7db4ff);
+}
+
+.engine-main {
+  display: grid;
+  gap: 3px;
+}
+
+.engine-main strong {
+  font-size: 1.05rem;
+}
+
+.engine-main code {
+  color: var(--ink-soft);
+}
+
+.engine-score {
+  font-weight: 900;
+  color: #5d66d8;
+  white-space: nowrap;
+}
+
+.engine-move-card small {
+  grid-column: 2 / -1;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+
+/* === GM_DYNAMIC_STOCKFISH_V3_CSS START === */
+.engine-summary {
+  margin: 12px 0 10px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.48);
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+body.dark .engine-summary {
+  background: rgba(255,255,255,0.05);
+}
+
+.engine-summary strong {
+  color: var(--ink);
+}
+
+.muted {
+  color: var(--ink-soft);
+  opacity: 0.9;
+}
+
+.engine-move-list {
+  display: grid;
+  gap: 10px;
+  max-height: 390px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.engine-move-card {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 12px 13px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.58);
+  color: var(--ink);
+  cursor: pointer;
+  transition: 0.16s ease;
+}
+
+body.dark .engine-move-card {
+  background: rgba(255,255,255,0.05);
+}
+
+.engine-move-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(31, 38, 135, 0.15);
+}
+
+.engine-rank {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  color: #fff;
+  background: linear-gradient(135deg, #7b73ff, #7db4ff);
+}
+
+.engine-main {
+  display: grid;
+  gap: 3px;
+}
+
+.engine-main strong {
+  font-size: 1.05rem;
+}
+
+.engine-main code {
+  color: var(--ink-soft);
+}
+
+.engine-score {
+  font-weight: 900;
+  color: #5d66d8;
+  white-space: nowrap;
+}
+
+.engine-move-card small {
+  grid-column: 2 / -1;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.position-text {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.56);
+  color: var(--ink);
+  padding: 14px 16px;
+  border-radius: 18px;
+  outline: none;
+  font: inherit;
+  line-height: 1.45;
+}
+
+body.dark .position-text {
+  background: rgba(255,255,255,0.05);
+}
+
+.position-text:focus {
+  border-color: rgba(125, 121, 255, 0.38);
+  box-shadow: 0 0 0 4px rgba(126, 181, 255, 0.14);
+}
+/* === GM_DYNAMIC_STOCKFISH_V3_CSS END === */
