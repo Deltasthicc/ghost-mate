@@ -301,46 +301,20 @@ function renderLegalMoves() {
   });
 }
 
+// === GM_FAST_UI_OPTIMIZATION START ===
 async function refreshEngineAnalysis() {
-  if (!state.game?.fen) return;
-
-  const requestId = ++state.engineSeq;
-  state.engineLoading = true;
-  state.engineError = null;
-  renderLegalMoves();
-
-  try {
-    const analysis = await api("/api/engine/analysis?multipv=5");
-
-    if (requestId !== state.engineSeq) return;
-
-    state.engine = analysis;
-    state.engineLoading = false;
-    state.engineError = null;
-
-    if (state.game) {
-      state.game.evaluation = {
-        display: analysis.current_display_white,
-        mate_in: analysis.mate_in,
-        source: "stockfish",
-      };
-    }
-
-    renderGame();
-    renderLegalMoves();
-  } catch (err) {
-    if (requestId !== state.engineSeq) return;
-
-    state.engineLoading = false;
-    state.engineError = err.message;
-    renderLegalMoves();
-  }
+  return;
 }
 
 function queueEngineAnalysis(delayMs = 120) {
   clearTimeout(queueEngineAnalysis.timer);
-  queueEngineAnalysis.timer = setTimeout(refreshEngineAnalysis, delayMs);
+  queueEngineAnalysis.timer = setTimeout(() => {
+    if (window.GhostMateQueueEngineRefresh) {
+      window.GhostMateQueueEngineRefresh(delayMs);
+    }
+  }, Math.max(80, delayMs));
 }
+// === GM_FAST_UI_OPTIMIZATION END ===
 
 function renderSnapshot() {
   const grid = el("sensor-grid");
@@ -943,7 +917,7 @@ window.addEventListener("pagehide", () => {
 // === GM_DYNAMIC_STOCKFISH_V3_UI START ===
 (() => {
   const ENGINE_URL = "/api/engine/live?multipv=5";
-  const REFRESH_MS = 3000;
+  const REFRESH_MS = 1800;
 
   let engineAnalysis = null;
   let engineLoading = false;
@@ -961,6 +935,7 @@ window.addEventListener("pagehide", () => {
   }
 
   function ensureStockfishUI() {
+    if (ensureStockfishUI.done) return;
     const moveList = $("legal-moves");
     if (!moveList) return;
 
@@ -1011,6 +986,7 @@ window.addEventListener("pagehide", () => {
     $("load-fen")?.addEventListener("click", loadFenFromInput);
     $("load-pgn")?.addEventListener("click", loadPgnFromInput);
     $("move-filter")?.addEventListener("input", renderEnginePanel);
+    ensureStockfishUI.done = true;
   }
 
   function evalDisplay(analysis) {
@@ -1132,7 +1108,7 @@ window.addEventListener("pagehide", () => {
         };
       }
 
-      if (typeof renderGame === "function") renderGame();
+      if (typeof renderEvaluationUI === "function") renderEvaluationUI();
       renderEnginePanel();
     } catch (err) {
       if (seq !== requestSeq) return;
@@ -1211,5 +1187,6 @@ window.addEventListener("pagehide", () => {
   }
 
   window.GhostMateRefreshEngine = refreshEngineAnalysis;
+  window.GhostMateQueueEngineRefresh = queueEngineRefresh;
 })();
 // === GM_DYNAMIC_STOCKFISH_V3_UI END ===

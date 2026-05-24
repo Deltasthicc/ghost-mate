@@ -264,6 +264,8 @@ from io import StringIO as _gm_StringIO
 import chess as _gm_chess
 import chess.engine as _gm_chess_engine
 import chess.pgn as _gm_chess_pgn
+import time as _gm_time
+import threading as _gm_threading
 from pydantic import BaseModel as _GMBaseModel
 
 
@@ -273,6 +275,36 @@ class _GMFenRequest(_GMBaseModel):
 
 class _GMPgnRequest(_GMBaseModel):
     pgn: str
+
+
+# === GM_FAST_STOCKFISH_OPTIMIZATION START ===
+_GM_ENGINE_LOCK = _gm_threading.Lock()
+_GM_ENGINE = None
+_GM_ENGINE_PATH = None
+_GM_ANALYSIS_CACHE = {}
+_GM_CACHE_TTL_S = 0.9
+
+def _gm_analyse_with_persistent_engine(board, stockfish_path, limit, safe_multipv):
+    global _GM_ENGINE, _GM_ENGINE_PATH
+
+    with _GM_ENGINE_LOCK:
+        if _GM_ENGINE is None or _GM_ENGINE_PATH != stockfish_path:
+            if _GM_ENGINE is not None:
+                try:
+                    _GM_ENGINE.quit()
+                except Exception:
+                    pass
+
+            _GM_ENGINE = _gm_chess_engine.SimpleEngine.popen_uci(stockfish_path)
+            _GM_ENGINE_PATH = stockfish_path
+
+            try:
+                _GM_ENGINE.configure({"Threads": 2, "Hash": 64})
+            except Exception:
+                pass
+
+        return _GM_ENGINE.analyse(board, limit, multipv=safe_multipv)
+# === GM_FAST_STOCKFISH_OPTIMIZATION END ===
 
 
 def _gm_score_cp_white(score: _gm_chess_engine.Score) -> int | None:
@@ -353,8 +385,7 @@ def _gm_stockfish_live_sync(
     safe_multipv = max(1, min(int(multipv), 5, len(legal_moves)))
     limit = _gm_chess_engine.Limit(time=max(0.05, float(move_time_s)))
 
-    with _gm_chess_engine.SimpleEngine.popen_uci(stockfish_path) as engine:
-        infos = engine.analyse(board, limit, multipv=safe_multipv)
+    infos = _gm_analyse_with_persistent_engine(board, stockfish_path, limit, safe_multipv)
 
     info_list = [infos] if isinstance(infos, dict) else list(infos)
 
@@ -493,14 +524,29 @@ async def gm_engine_live(request: Request, multipv: int = 5) -> dict:
     settings = request.app.state.settings
     board = request.app.state.game.board.copy(stack=False)
 
+    cache_key = (
+        board.fen(),
+        settings.stockfish_path,
+        int(max(1, min(int(multipv), 5))),
+        round(float(settings.engine_move_time_s), 3),
+    )
+
+    now = _gm_time.monotonic()
+    cached = _GM_ANALYSIS_CACHE.get(cache_key)
+    if cached and now - cached[0] < _GM_CACHE_TTL_S:
+        return cached[1]
+
     try:
-        return await _gm_asyncio.to_thread(
+        result = await _gm_asyncio.to_thread(
             _gm_stockfish_live_sync,
             board,
             settings.stockfish_path,
             settings.engine_move_time_s,
             multipv,
         )
+        _GM_ANALYSIS_CACHE.clear()
+        _GM_ANALYSIS_CACHE[cache_key] = (_gm_time.monotonic(), result)
+        return result
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=503,
