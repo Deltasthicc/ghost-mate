@@ -1,4 +1,3 @@
-README.md
 pyproject.toml
 autonomous_corexy_chess_robot.egg-info/PKG-INFO
 autonomous_corexy_chess_robot.egg-info/SOURCES.txt

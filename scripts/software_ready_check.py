@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,12 @@ def run(name: str, command: list[str], cwd: Path | None = None) -> None:
 
 
 def main() -> None:
+    # Readiness checks must be hardware-independent.
+    # Force mock serial so pytest/smoke tests do not talk to a real ESP32.
+    os.environ["SERIAL_MOCK"] = "true"
+    os.environ.setdefault("SERIAL_PORT", "MOCK")
+    os.environ.setdefault("SERIAL_BAUD", "115200")
+
     parser = argparse.ArgumentParser(description="Run full software readiness checks.")
     parser.add_argument("--firmware", action="store_true", help="Also compile ESP32 firmware with PlatformIO.")
     args = parser.parse_args()

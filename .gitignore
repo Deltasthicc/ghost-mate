@@ -1,10 +1,29 @@
-venv/
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+
+# Python package build files
+*.egg-info/
+build/
+dist/
+
+# Secrets / local env
 .env
-.data/
+!.env.example
+
+# Local databases / generated data
+*.db
 data/db/*.db
-data/logs/*.log
-.pio/
-.vscode/.browse.c_cpp.db*
+
+# Editor / OS files
 .DS_Store
+.vscode/
+.idea/

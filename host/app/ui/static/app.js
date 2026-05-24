@@ -8,6 +8,10 @@ const state = {
   ws: null,
   shuttingDown: false,
   events: [],
+  engine: null,
+  engineLoading: false,
+  engineError: null,
+  engineSeq: 0,
 };
 
 const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
@@ -222,26 +226,120 @@ function renderGame() {
 
 function renderLegalMoves() {
   const box = el("legal-moves");
+  const summary = el("engine-summary");
   if (!box) return;
 
   const filter = (el("move-filter")?.value || "").trim().toLowerCase();
-  const moves = (state.game?.legal_moves || []).filter((m) => m.includes(filter));
+  const analysis = state.engine;
+
+  if (summary) {
+    if (state.engineLoading) {
+      summary.textContent = "Stockfish is analyzing the current position...";
+    } else if (state.engineError) {
+      summary.textContent = `Stockfish error: ${state.engineError}`;
+    } else if (analysis) {
+      const mate = analysis.mate_in === null || analysis.mate_in === undefined
+        ? "Mate: —"
+        : analysis.mate_in > 0
+          ? `Mate for ${analysis.turn} in ${analysis.mate_in}`
+          : `Mated in ${Math.abs(analysis.mate_in)}`;
+
+      summary.innerHTML = `
+        <strong>Position:</strong> ${analysis.current_display_white} from White ·
+        <strong>${analysis.turn} to move:</strong> ${analysis.current_display_turn} ·
+        <strong>${mate}</strong> ·
+        <span>depth ${analysis.depth ?? "?"}</span>
+      `;
+    } else {
+      summary.textContent = "No engine analysis yet.";
+    }
+  }
 
   box.innerHTML = "";
 
+  if (state.engineLoading && !analysis) {
+    box.innerHTML = `<span class="hint">Analyzing...</span>`;
+    return;
+  }
+
+  if (state.engineError) {
+    box.innerHTML = `<span class="hint">${state.engineError}</span>`;
+    return;
+  }
+
+  const moves = (analysis?.best_moves || []).filter((move) => {
+    const haystack = `${move.uci} ${move.san} ${(move.pv || []).join(" ")}`.toLowerCase();
+    return haystack.includes(filter);
+  });
+
   if (!moves.length) {
-    box.innerHTML = `<span class="hint">No matching legal moves.</span>`;
+    box.innerHTML = `<span class="hint">No Stockfish suggestions for this position.</span>`;
     return;
   }
 
   moves.forEach((move) => {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "move-pill";
-    chip.textContent = move;
-    chip.addEventListener("click", () => sendHumanMove(move));
-    box.appendChild(chip);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "engine-move-card";
+
+    const mateText = move.mate_in === null || move.mate_in === undefined
+      ? ""
+      : move.mate_in > 0
+        ? ` · mate in ${move.mate_in}`
+        : ` · mated in ${Math.abs(move.mate_in)}`;
+
+    card.innerHTML = `
+      <span class="engine-rank">#${move.rank}</span>
+      <span class="engine-main"><strong>${move.san}</strong><code>${move.uci}</code></span>
+      <span class="engine-score">${move.score_display_turn}${mateText}</span>
+      <small>PV: ${(move.pv || []).join(" ") || "—"}</small>
+    `;
+
+    card.title = "Click to play this Stockfish suggested move";
+    card.addEventListener("click", () => sendHumanMove(move.uci));
+    box.appendChild(card);
   });
+}
+
+async function refreshEngineAnalysis() {
+  if (!state.game?.fen) return;
+
+  const requestId = ++state.engineSeq;
+  state.engineLoading = true;
+  state.engineError = null;
+  renderLegalMoves();
+
+  try {
+    const analysis = await api("/api/engine/analysis?multipv=5");
+
+    if (requestId !== state.engineSeq) return;
+
+    state.engine = analysis;
+    state.engineLoading = false;
+    state.engineError = null;
+
+    if (state.game) {
+      state.game.evaluation = {
+        display: analysis.current_display_white,
+        mate_in: analysis.mate_in,
+        source: "stockfish",
+      };
+    }
+
+    renderGame();
+    renderLegalMoves();
+  } catch (err) {
+    if (requestId !== state.engineSeq) return;
+
+    state.engineLoading = false;
+    state.engineError = err.message;
+    renderLegalMoves();
+  }
+}
+
+function queueEngineAnalysis(delayMs = 120) {
+  clearTimeout(queueEngineAnalysis.timer);
+  queueEngineAnalysis.timer = setTimeout(refreshEngineAnalysis, delayMs);
 }
 
 function renderSnapshot() {
@@ -306,6 +404,7 @@ async function refreshState() {
   state.game = await api("/api/state");
   setText("host-status", "Online");
   renderGame();
+  queueEngineAnalysis();
 }
 
 async function refreshSnapshot() {
@@ -334,6 +433,7 @@ async function sendHumanMove(rawMove) {
     if (input) input.value = "";
 
     renderGame();
+    queueEngineAnalysis();
     addEvent("HUMAN_MOVE_APPLIED", { uci: move });
     showToast(`Move applied: ${move}`);
   } catch (err) {
@@ -439,6 +539,7 @@ function connectWebSocket() {
       if (data.type === "HELLO" && data.state) {
         state.game = data.state;
         renderGame();
+        queueEngineAnalysis();
       }
 
       if (["STATE_CHANGED", "LOCAL_MOVE_CANDIDATE", "SCAN_RECEIVED", "ROBOT_MOVE_COMPLETE"].includes(data.type)) {
@@ -462,6 +563,7 @@ function bindEvents() {
       state.pendingMove = "";
       state.lastMove = null;
       renderGame();
+      queueEngineAnalysis();
       addEvent("NEW_GAME", { game_id: state.game.game_id });
       showToast("New game started.");
     } catch (err) {
