@@ -101,7 +101,7 @@ def _stockfish_analysis_sync(
             continue
 
         white_score = score_obj.pov(chess.WHITE)
-        turn_score = score_obj.pov(board.turn)
+        turn_score = score_obj.pov(chess.WHITE)
 
         depth = info.get("depth")
         if isinstance(depth, int) and (top_depth is None or depth > top_depth):
@@ -151,7 +151,7 @@ def _stockfish_analysis_sync(
         "best_moves": best_moves,
         "note": (
             "White score is from White's point of view. "
-            "Turn score is from the player-to-move's point of view."
+            "All scores are White-centric: positive means White is better, negative means Black is better."
         ),
     }
 
@@ -252,3 +252,278 @@ async def engine_analysis(request: Request, multipv: int = 5) -> dict:
         ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Stockfish analysis failed: {exc}") from exc
+
+
+# === GM_DYNAMIC_STOCKFISH_V3_BACKEND START ===
+# Extra analysis/position endpoints. These are intentionally additive so existing
+# routes/tests remain intact.
+
+import asyncio as _gm_asyncio
+from io import StringIO as _gm_StringIO
+
+import chess as _gm_chess
+import chess.engine as _gm_chess_engine
+import chess.pgn as _gm_chess_pgn
+from pydantic import BaseModel as _GMBaseModel
+
+
+class _GMFenRequest(_GMBaseModel):
+    fen: str
+
+
+class _GMPgnRequest(_GMBaseModel):
+    pgn: str
+
+
+def _gm_score_cp_white(score: _gm_chess_engine.Score) -> int | None:
+    if score.mate() is not None:
+        return None
+    return score.score()
+
+
+def _gm_score_display_white(score: _gm_chess_engine.Score) -> str:
+    mate = score.mate()
+    if mate is not None:
+        if mate > 0:
+            return f"M{mate}"
+        if mate < 0:
+            return f"-M{abs(mate)}"
+        return "M0"
+
+    cp = score.score()
+    if cp is None:
+        return "--"
+    return f"{cp / 100:+.2f}"
+
+
+def _gm_mate_display_white(score: _gm_chess_engine.Score) -> str:
+    mate = score.mate()
+    if mate is None:
+        return "—"
+    if mate > 0:
+        return f"White mates in {mate}"
+    if mate < 0:
+        return f"Black mates in {abs(mate)}"
+    return "Mate now"
+
+
+def _gm_pv_to_san(board: _gm_chess.Board, pv: list[_gm_chess.Move], limit: int = 8) -> list[str]:
+    copy = board.copy(stack=False)
+    readable: list[str] = []
+
+    for move in pv[:limit]:
+        try:
+            if move in copy.legal_moves:
+                readable.append(copy.san(move))
+                copy.push(move)
+            else:
+                readable.append(move.uci())
+                break
+        except Exception:
+            readable.append(move.uci())
+            break
+
+    return readable
+
+
+def _gm_stockfish_live_sync(
+    board: _gm_chess.Board,
+    stockfish_path: str,
+    move_time_s: float,
+    multipv: int,
+) -> dict:
+    if board.is_game_over(claim_draw=True):
+        result = board.result(claim_draw=True)
+        return {
+            "fen": board.fen(),
+            "turn": "white" if board.turn == _gm_chess.WHITE else "black",
+            "score_view": "white",
+            "depth": None,
+            "current_display": result,
+            "current_display_white": result,
+            "current_score_cp": None,
+            "current_score_cp_white": None,
+            "mate_in": None,
+            "mate_display": result,
+            "best_moves": [],
+            "note": "Game is over.",
+        }
+
+    legal_moves = list(board.legal_moves)
+    safe_multipv = max(1, min(int(multipv), 5, len(legal_moves)))
+    limit = _gm_chess_engine.Limit(time=max(0.05, float(move_time_s)))
+
+    with _gm_chess_engine.SimpleEngine.popen_uci(stockfish_path) as engine:
+        infos = engine.analyse(board, limit, multipv=safe_multipv)
+
+    info_list = [infos] if isinstance(infos, dict) else list(infos)
+
+    best_moves = []
+    top_depth = None
+    current_white_score = None
+
+    for rank, info in enumerate(info_list, start=1):
+        score_obj = info.get("score")
+        pv = info.get("pv") or []
+        if not score_obj or not pv:
+            continue
+
+        move = pv[0]
+        if move not in board.legal_moves:
+            continue
+
+        white_score = score_obj.pov(_gm_chess.WHITE)
+
+        depth = info.get("depth")
+        if isinstance(depth, int) and (top_depth is None or depth > top_depth):
+            top_depth = depth
+
+        if current_white_score is None:
+            current_white_score = white_score
+
+        display = _gm_score_display_white(white_score)
+
+        best_moves.append(
+            {
+                "rank": rank,
+                "uci": move.uci(),
+                "san": board.san(move),
+
+                # Canonical White-POV fields.
+                "score_cp": _gm_score_cp_white(white_score),
+                "score_display": display,
+
+                # Explicit White-POV fields.
+                "score_cp_white": _gm_score_cp_white(white_score),
+                "score_display_white": display,
+
+                # Legacy aliases kept White-POV to avoid side-to-move sign confusion.
+                "score_cp_turn": _gm_score_cp_white(white_score),
+                "score_display_turn": display,
+
+                "mate_in": white_score.mate(),
+                "mate_display": _gm_mate_display_white(white_score),
+                "pv": _gm_pv_to_san(board, list(pv)),
+            }
+        )
+
+    if current_white_score is None:
+        return {
+            "fen": board.fen(),
+            "turn": "white" if board.turn == _gm_chess.WHITE else "black",
+            "score_view": "white",
+            "depth": top_depth,
+            "current_display": "--",
+            "current_display_white": "--",
+            "current_score_cp": None,
+            "current_score_cp_white": None,
+            "mate_in": None,
+            "mate_display": "—",
+            "best_moves": [],
+            "note": "Stockfish returned no usable legal move.",
+        }
+
+    display = _gm_score_display_white(current_white_score)
+
+    return {
+        "fen": board.fen(),
+        "turn": "white" if board.turn == _gm_chess.WHITE else "black",
+        "score_view": "white",
+        "depth": top_depth,
+
+        # Canonical fields.
+        "current_display": display,
+        "current_score_cp": _gm_score_cp_white(current_white_score),
+
+        # Explicit White-POV fields.
+        "current_display_white": display,
+        "current_score_cp_white": _gm_score_cp_white(current_white_score),
+
+        # Legacy aliases kept White-POV.
+        "current_display_turn": display,
+        "current_score_cp_turn": _gm_score_cp_white(current_white_score),
+
+        "mate_in": current_white_score.mate(),
+        "mate_display": _gm_mate_display_white(current_white_score),
+        "best_moves": best_moves,
+        "note": (
+            "All scores are White-centric: positive means White is better, "
+            "negative means Black is better. Move ranking is Stockfish MultiPV "
+            "for the side to move."
+        ),
+    }
+
+
+async def _gm_set_game_board_from_fen(request: Request, fen: str) -> dict:
+    board = _gm_chess.Board(fen)
+
+    game = request.app.state.game
+
+    try:
+        game.new_game(board.fen())
+    except TypeError:
+        # Fallback for older GameState implementations.
+        game.new_game()
+        game.board = board
+
+    snapshot = game.snapshot()
+
+    try:
+        await request.app.state.events.publish(Event(EventType.STATE_CHANGED, snapshot))
+    except Exception:
+        pass
+
+    return snapshot
+
+
+def _gm_final_board_from_pgn(pgn_text: str) -> _gm_chess.Board:
+    game = _gm_chess_pgn.read_game(_gm_StringIO(pgn_text.strip()))
+    if game is None:
+        raise ValueError("Could not parse PGN. Paste a valid PGN game.")
+
+    board = game.board()
+    for move in game.mainline_moves():
+        board.push(move)
+
+    return board
+
+
+@router.get("/engine/live")
+async def gm_engine_live(request: Request, multipv: int = 5) -> dict:
+    settings = request.app.state.settings
+    board = request.app.state.game.board.copy(stack=False)
+
+    try:
+        return await _gm_asyncio.to_thread(
+            _gm_stockfish_live_sync,
+            board,
+            settings.stockfish_path,
+            settings.engine_move_time_s,
+            multipv,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Stockfish executable not found at {settings.stockfish_path!r}. Set STOCKFISH_PATH in .env.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Stockfish live analysis failed: {exc}") from exc
+
+
+@router.post("/position/fen")
+async def gm_load_fen(request: Request, body: _GMFenRequest) -> dict:
+    try:
+        return await _gm_set_game_board_from_fen(request, body.fen.strip())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid FEN: {exc}") from exc
+
+
+@router.post("/position/pgn")
+async def gm_load_pgn(request: Request, body: _GMPgnRequest) -> dict:
+    try:
+        board = _gm_final_board_from_pgn(body.pgn)
+        return await _gm_set_game_board_from_fen(request, board.fen())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid PGN: {exc}") from exc
+
+# === GM_DYNAMIC_STOCKFISH_V3_BACKEND END ===
