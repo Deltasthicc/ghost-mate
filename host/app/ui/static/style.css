@@ -1,3 +1,52 @@
+/*
+ * GhostMate UI — performance-tuned globals.
+ * Append to the start of style.css. These rules reduce GPU load on Raspberry
+ * Pi 4 (and any low-end client) without changing the visual brand.
+ *
+ * Strategy:
+ * - Slash backdrop-filter blur on the Pi (it's a major GPU cost; 26px blur
+ *   composites every frame).
+ * - Tone down ambient halo blur so the radial-gradient body background does
+ *   most of the work instead.
+ * - Disable transitions and ambient blobs when prefers-reduced-motion is set
+ *   or the viewport is small (Pi 4 touchscreens at 1024x600 are typical).
+ * - Promote frequently-changing surfaces (.chessboard squares, .sensor-grid
+ *   cells) to their own compositor layer so they don't repaint the panel.
+ */
+
+:root {
+  /* Cheaper blur. The :root override beats the later :root block because
+   * cascade order treats the last "winning" declaration; we redeclare in the
+   * later block too — keep both in sync. */
+  --glass-blur: blur(10px);
+}
+
+@media (max-width: 1024px), (max-resolution: 1.0dppx) and (max-width: 1280px) {
+  :root { --glass-blur: blur(0); }
+  .ambient { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+  .ambient { display: none; }
+}
+
+/* Compositor-layer promotion for the two surfaces that re-render most. */
+.chessboard,
+.sensor-grid {
+  will-change: contents;
+  transform: translateZ(0);
+}
+
+/* Inputs do not need transitions on cheap GPUs. */
+.square,
+.sensor-cell {
+  contain: layout style paint;
+}
+
 :root {
   --bg-a: #f5f6fb;
   --bg-b: #d9e5f0;

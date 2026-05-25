@@ -1,3 +1,9 @@
+"""Async pub/sub event bus.
+
+Publish is now lock-free and lazily garbage-collects full queues, so a slow
+subscriber can't stall the entire app. Subscribe/unsubscribe is the only path
+that touches the lock.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +22,7 @@ class EventType(StrEnum):
     GAME_END = "GAME_END"
     FAULT = "FAULT"
     STATE_CHANGED = "STATE_CHANGED"
+    ENGINE_UPDATE = "ENGINE_UPDATE"
 
 
 @dataclass(frozen=True)
@@ -26,25 +33,55 @@ class Event:
 
 
 class EventBus:
-    """Small async pub/sub bus used by API, WebSocket, and game services."""
+    """Tiny async pub/sub.
 
-    def __init__(self) -> None:
+    Publish path takes no lock: iterates a snapshot of the subscriber set and
+    fans out non-blocking puts. Slow subscribers get dropped from a queue rather
+    than blocking everyone else.
+    """
+
+    __slots__ = ("_subscribers", "_lock", "_default_max")
+
+    def __init__(self, default_max: int = 256) -> None:
         self._subscribers: set[asyncio.Queue[Event]] = set()
         self._lock = asyncio.Lock()
+        self._default_max = default_max
 
     async def publish(self, event: Event) -> None:
-        async with self._lock:
-            dead: list[asyncio.Queue[Event]] = []
-            for queue in self._subscribers:
+        # Snapshot to a tuple so iteration is safe without holding the lock.
+        dead: list[asyncio.Queue[Event]] | None = None
+        for q in tuple(self._subscribers):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                # Queue is wedged — drop the oldest event to make room and try
+                # again. If that still fails, mark for removal.
                 try:
-                    queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    dead.append(queue)
-            for queue in dead:
-                self._subscribers.discard(queue)
+                    q.get_nowait()
+                    q.put_nowait(event)
+                except Exception:
+                    if dead is None:
+                        dead = []
+                    dead.append(q)
+        if dead:
+            async with self._lock:
+                for q in dead:
+                    self._subscribers.discard(q)
 
-    async def subscribe(self, maxsize: int = 100) -> asyncio.Queue[Event]:
-        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=maxsize)
+    def publish_nowait(self, event: Event) -> None:
+        """Synchronous publish for use from sync callbacks. Best-effort."""
+        for q in tuple(self._subscribers):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                    q.put_nowait(event)
+                except Exception:
+                    pass
+
+    async def subscribe(self, maxsize: int | None = None) -> asyncio.Queue[Event]:
+        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=maxsize or self._default_max)
         async with self._lock:
             self._subscribers.add(queue)
         return queue

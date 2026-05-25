@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autonomous-corexy-chess-robot"
-version = "0.1.0"
-description = "Host software for an autonomous CoreXY chess robot"
+version = "0.2.0"
+description = "Host software for an autonomous CoreXY chess robot (GhostMate)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
@@ -19,6 +19,7 @@ dependencies = [
     "jinja2>=3.1",
     "aiohttp>=3.9",
     "berserk>=0.13",
+    "orjson>=3.10",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
     "ruff>=0.4",
+]
+linux = [
+    "uvloop>=0.19; sys_platform != 'win32'",
 ]
 
 [tool.setuptools.packages.find]

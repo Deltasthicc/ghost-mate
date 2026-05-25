@@ -4,6 +4,8 @@ import argparse
 import os
 import shutil
 import subprocess
+import os
+import os
 import sys
 from pathlib import Path
 
@@ -35,7 +37,7 @@ def main() -> None:
     args = parser.parse_args()
 
     run("Python compile check", [sys.executable, "-m", "compileall", "host", "scripts"])
-    run("Pytest suite", [sys.executable, "-m", "pytest", "-q"])
+    run("Pytest suite", [sys.executable, "-m", "pytest", "-q", "--maxfail=1", "--timeout=180"])
     run("HTTP/API smoke check", [sys.executable, "scripts/smoke_check.py"])
 
     if args.firmware:

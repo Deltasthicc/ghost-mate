@@ -1,1192 +1,928 @@
-const state = {
-  game: null,
-  snapshot: null,
-  selected: null,
-  pendingMove: "",
-  lastMove: null,
-  flipped: false,
-  ws: null,
-  shuttingDown: false,
-  events: [],
-  engine: null,
-  engineLoading: false,
-  engineError: null,
-  engineSeq: 0,
-};
-
-const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
-const ranks = ["8", "7", "6", "5", "4", "3", "2", "1"];
-const pieces = {
-  P: "♙", N: "♘", B: "♗", R: "♖", Q: "♕", K: "♔",
-  p: "♟", n: "♞", b: "♝", r: "♜", q: "♛", k: "♚",
-};
-
-function el(id) {
-  return document.getElementById(id);
-}
-
-function q(selector) {
-  return document.querySelector(selector);
-}
-
-function setText(idOrSelector, value) {
-  const node = idOrSelector.startsWith("#") ? q(idOrSelector) : el(idOrSelector);
-  if (node) node.textContent = value;
-}
-
-function showToast(message) {
-  const node = el("toast");
-  if (!node) return;
-  node.textContent = message;
-  node.classList.add("show");
-  clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => node.classList.remove("show"), 2500);
-}
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-
-  let data = null;
-  try {
-    data = await response.json();
-  } catch {
-    data = { detail: "Server returned non-JSON response" };
-  }
-
-  if (!response.ok) {
-    const msg = typeof data.detail === "string" ? data.detail : JSON.stringify(data);
-    throw new Error(msg || `Request failed: ${response.status}`);
-  }
-
-  return data;
-}
-
-function visibleFiles() {
-  return state.flipped ? [...files].reverse() : files;
-}
-
-function visibleRanks() {
-  return state.flipped ? [...ranks].reverse() : ranks;
-}
-
-function fenToMap(fen) {
-  const map = {};
-  const boardFen = String(fen || "").split(" ")[0];
-  const rows = boardFen.split("/");
-
-  rows.forEach((row, rowIndex) => {
-    let fileIndex = 0;
-    const rank = String(8 - rowIndex);
-
-    for (const char of row) {
-      if (/\d/.test(char)) {
-        fileIndex += Number(char);
-      } else {
-        map[`${files[fileIndex]}${rank}`] = char;
-        fileIndex += 1;
-      }
-    }
-  });
-
-  return map;
-}
-
-function renderAxisLabels() {
-  const rankBox = el("rank-labels");
-  const fileBox = el("file-labels");
-
-  if (rankBox) {
-    rankBox.innerHTML = visibleRanks().map((rank) => `<span>${rank}</span>`).join("");
-  }
-
-  if (fileBox) {
-    fileBox.innerHTML = visibleFiles().map((file) => `<span>${file}</span>`).join("");
-  }
-}
-
-function renderBoard() {
-  renderAxisLabels();
-
-  const board = el("chessboard");
-  if (!board) return;
-
-  const pieceMap = fenToMap(state.game?.fen || "");
-  const legalMoves = state.game?.legal_moves || [];
-  const targetSquares = new Set(
-    state.selected
-      ? legalMoves.filter((m) => m.slice(0, 2) === state.selected).map((m) => m.slice(2, 4))
-      : []
-  );
-
-  board.innerHTML = "";
-
-  visibleRanks().forEach((rank, row) => {
-    visibleFiles().forEach((file, col) => {
-      const square = `${file}${rank}`;
-      const piece = pieceMap[square];
-
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.dataset.square = square;
-      btn.className = `square ${(row + col) % 2 ? "dark-square" : "light-square"}`;
-
-      if (square === state.selected) btn.classList.add("selected");
-      if (targetSquares.has(square)) btn.classList.add("target");
-      if (state.lastMove && (square === state.lastMove.from || square === state.lastMove.to)) {
-        btn.classList.add("last-move");
-      }
-
-      if (piece) {
-        const pieceNode = document.createElement("span");
-        pieceNode.className = `piece ${piece === piece.toUpperCase() ? "white" : "black"}`;
-        pieceNode.textContent = pieces[piece] || piece;
-        btn.appendChild(pieceNode);
-      }
-
-      const coord = document.createElement("span");
-      coord.className = "coord";
-      coord.textContent = square;
-      btn.appendChild(coord);
-
-      btn.addEventListener("click", () => handleSquareClick(square, piece));
-      board.appendChild(btn);
-    });
-  });
-
-  setText("selected-move", state.pendingMove || "Click a piece, then a target square");
-}
-
-async function handleSquareClick(square, piece) {
-  if (!state.game) {
-    showToast("Game state is still loading.");
-    return;
-  }
-
-  if (!state.selected) {
-    if (!piece) {
-      showToast("Choose a piece first.");
-      return;
-    }
-
-    state.selected = square;
-    state.pendingMove = "";
-    renderBoard();
-    showToast(`Selected ${square}. Now choose a target square.`);
-    return;
-  }
-
-  let move = `${state.selected}${square}`;
-  if (!state.game.legal_moves.includes(move) && state.game.legal_moves.includes(`${move}q`)) {
-    move = `${move}q`;
-  }
-
-  state.pendingMove = move;
-  const input = el("uci");
-  if (input) input.value = move;
-
-  if (!state.game.legal_moves.includes(move)) {
-    showToast(`${move} is not legal here.`);
-    state.selected = null;
-    state.pendingMove = "";
-    renderBoard();
-    return;
-  }
-
-  await sendHumanMove(move);
-}
-
-function renderGame() {
-  if (!state.game) return;
-
-  const game = state.game;
-
-  setText("turn-value", game.turn || "--");
-  setText("turn-helper", game.turn === "white" ? "White to move" : "Black to move");
-  setText("legal-count", String(game.legal_moves?.length || 0));
-  setText("game-status", game.is_game_over ? "Game Over" : game.is_check ? "Check" : "Active");
-  setText("game-result", game.result || "No result yet");
-  setText("robot-status", game.robot_busy ? "Busy" : "Ready");
-  setText("robot-helper", game.last_error || "No robot error reported");
-  setText("game-id", game.game_id || "--");
-  setText("check-state", game.is_check ? "Yes" : "No");
-  setText("fen-value", game.fen || "--");
-
-  const raw = el("state");
-  if (raw) raw.textContent = JSON.stringify(game, null, 2);
-
-  renderBoard();
-  renderLegalMoves();
-}
-
-function renderLegalMoves() {
-  const box = el("legal-moves");
-  const summary = el("engine-summary");
-  if (!box) return;
-
-  const filter = (el("move-filter")?.value || "").trim().toLowerCase();
-  const analysis = state.engine;
-
-  if (summary) {
-    if (state.engineLoading) {
-      summary.textContent = "Stockfish is analyzing the current position...";
-    } else if (state.engineError) {
-      summary.textContent = `Stockfish error: ${state.engineError}`;
-    } else if (analysis) {
-      const mate = analysis.mate_in === null || analysis.mate_in === undefined
-        ? "Mate: —"
-        : analysis.mate_in > 0
-          ? `Mate for ${analysis.turn} in ${analysis.mate_in}`
-          : `Mated in ${Math.abs(analysis.mate_in)}`;
-
-      summary.innerHTML = `
-        <strong>Position:</strong> ${analysis.current_display_white} from White ·
-        <strong>${analysis.turn} to move:</strong> ${analysis.current_display_turn} ·
-        <strong>${mate}</strong> ·
-        <span>depth ${analysis.depth ?? "?"}</span>
-      `;
-    } else {
-      summary.textContent = "No engine analysis yet.";
-    }
-  }
-
-  box.innerHTML = "";
-
-  if (state.engineLoading && !analysis) {
-    box.innerHTML = `<span class="hint">Analyzing...</span>`;
-    return;
-  }
-
-  if (state.engineError) {
-    box.innerHTML = `<span class="hint">${state.engineError}</span>`;
-    return;
-  }
-
-  const moves = (analysis?.best_moves || []).filter((move) => {
-    const haystack = `${move.uci} ${move.san} ${(move.pv || []).join(" ")}`.toLowerCase();
-    return haystack.includes(filter);
-  });
-
-  if (!moves.length) {
-    box.innerHTML = `<span class="hint">No Stockfish suggestions for this position.</span>`;
-    return;
-  }
-
-  moves.forEach((move) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "engine-move-card";
-
-    const mateText = move.mate_in === null || move.mate_in === undefined
-      ? ""
-      : move.mate_in > 0
-        ? ` · mate in ${move.mate_in}`
-        : ` · mated in ${Math.abs(move.mate_in)}`;
-
-    card.innerHTML = `
-      <span class="engine-rank">#${move.rank}</span>
-      <span class="engine-main"><strong>${move.san}</strong><code>${move.uci}</code></span>
-      <span class="engine-score">${move.score_display_turn}${mateText}</span>
-      <small>PV: ${(move.pv || []).join(" ") || "—"}</small>
-    `;
-
-    card.title = "Click to play this Stockfish suggested move";
-    card.addEventListener("click", () => sendHumanMove(move.uci));
-    box.appendChild(card);
-  });
-}
-
-// === GM_FAST_UI_OPTIMIZATION START ===
-async function refreshEngineAnalysis() {
-  return;
-}
-
-function queueEngineAnalysis(delayMs = 120) {
-  clearTimeout(queueEngineAnalysis.timer);
-  queueEngineAnalysis.timer = setTimeout(() => {
-    if (window.GhostMateQueueEngineRefresh) {
-      window.GhostMateQueueEngineRefresh(delayMs);
-    }
-  }, Math.max(80, delayMs));
-}
-// === GM_FAST_UI_OPTIMIZATION END ===
-
-function renderSnapshot() {
-  const grid = el("sensor-grid");
-  if (!grid) return;
-
-  const snapshot = state.snapshot;
-  grid.innerHTML = "";
-
-  if (!snapshot?.cells) {
-    setText("occupied-count", "--");
-    setText("sensor-timestamp", "--");
-    return;
-  }
-
-  let occupied = 0;
-
-  ranks.forEach((rank) => {
-    files.forEach((file) => {
-      const square = `${file}${rank}`;
-      const cell = snapshot.cells[square] || { o: 0, p: 0, m: 0 };
-      if (cell.o) occupied += 1;
-
-      const node = document.createElement("div");
-      const polarity = cell.p < 0 ? "white" : cell.p > 0 ? "black" : "";
-      node.className = `sensor-cell ${cell.o ? "occupied" : ""} ${polarity}`;
-      node.innerHTML = `<span>${square}</span><small>m:${cell.m ?? 0}</small>`;
-      grid.appendChild(node);
-    });
-  });
-
-  setText("occupied-count", String(occupied));
-  setText("sensor-timestamp", String(snapshot.ts_ms || "--"));
-}
-
-function addEvent(type, payload = {}) {
-  state.events.unshift({ type, payload, time: new Date().toLocaleTimeString() });
-  state.events = state.events.slice(0, 40);
-  renderEvents();
-}
-
-function renderEvents() {
-  const feed = el("events");
-  if (!feed) return;
-
-  feed.innerHTML = "";
-
-  if (!state.events.length) {
-    feed.innerHTML = `<div class="event"><strong>No events yet</strong><small>Live events will appear here.</small></div>`;
-    return;
-  }
-
-  state.events.forEach((event) => {
-    const node = document.createElement("div");
-    node.className = "event";
-    node.innerHTML = `<strong>${event.type}</strong><small>${event.time}</small><code>${JSON.stringify(event.payload)}</code>`;
-    feed.appendChild(node);
-  });
-}
-
-async function refreshState() {
-  state.game = await api("/api/state");
-  setText("host-status", "Online");
-  renderGame();
-  queueEngineAnalysis();
-}
-
-async function refreshSnapshot() {
-  state.snapshot = await api("/api/board/snapshot");
-  renderSnapshot();
-}
-
-async function sendHumanMove(rawMove) {
-  const move = String(rawMove || el("uci")?.value || "").trim();
-  if (!move) {
-    showToast("Enter a move first.");
-    return;
-  }
-
-  try {
-    state.game = await api("/api/move/human", {
-      method: "POST",
-      body: JSON.stringify({ uci: move }),
-    });
-
-    state.lastMove = { from: move.slice(0, 2), to: move.slice(2, 4) };
-    state.selected = null;
-    state.pendingMove = "";
-
-    const input = el("uci");
-    if (input) input.value = "";
-
-    renderGame();
-    queueEngineAnalysis();
-    addEvent("HUMAN_MOVE_APPLIED", { uci: move });
-    showToast(`Move applied: ${move}`);
-  } catch (err) {
-    addEvent("MOVE_REJECTED", { move, error: err.message });
-    showToast(err.message);
-  }
-}
-
-async function hardwareCommand(path, scanAfter = false) {
-  try {
-    const response = await api(path, { method: "POST" });
-    const log = el("hardware-log");
-    if (log) log.textContent = JSON.stringify(response, null, 2);
-
-    addEvent("HARDWARE_COMMAND", { path, response });
-
-    if (scanAfter) {
-      setTimeout(refreshSnapshot, 150);
-    }
-
-    showToast(`Hardware OK: ${path.split("/").pop()}`);
-  } catch (err) {
-    const log = el("hardware-log");
-    if (log) log.textContent = err.message;
-    addEvent("HARDWARE_ERROR", { path, error: err.message });
-    showToast(err.message);
-  }
-}
-
-async function sendRobotMove() {
-  const source = (el("robot-source")?.value || "").trim();
-  const target = (el("robot-target")?.value || "").trim();
-  const capture = Boolean(el("robot-capture")?.checked);
-
-  if (!/^[a-h][1-8]$/.test(source) || !/^[a-h][1-8]$/.test(target)) {
-    showToast("Use valid squares like g1 and f3.");
-    return;
-  }
-
-  try {
-    const response = await api("/api/move/robot", {
-      method: "POST",
-      body: JSON.stringify({ source, target, capture }),
-    });
-
-    const log = el("hardware-log");
-    if (log) log.textContent = JSON.stringify(response, null, 2);
-
-    addEvent("ROBOT_MOVE_SENT", { source, target, capture, response });
-    showToast(`Robot command sent: ${source} → ${target}`);
-  } catch (err) {
-    showToast(err.message);
-  }
-}
-
-function connectWebSocket() {
-  const pill = el("connection-status");
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-
-  state.ws = new WebSocket(`${protocol}://${location.host}/ws`);
-
-  state.ws.onopen = () => {
-    if (pill) {
-      pill.classList.remove("offline");
-      pill.innerHTML = "<i></i> Live";
-    }
-    setText("ws-status", "Live");
-    addEvent("WS_CONNECTED", { url: "/ws" });
-  };
-
-  state.ws.onclose = () => {
-    const pill = el("connection-status");
-
-    if (pill) {
-      pill.classList.add("offline");
-      pill.innerHTML = "<i></i> Offline";
-    }
-
-    if (state.shuttingDown) {
-      setText("ws-status", "Closed");
-      return;
-    }
-
-    setText("ws-status", "Reconnecting");
-
-    setTimeout(() => {
-      if (!state.shuttingDown) {
-        connectWebSocket();
-      }
-    }, 1600);
-  };
-
-  state.ws.onerror = () => {
-    if (pill) pill.classList.add("offline");
-    setText("ws-status", "Error");
-  };
-
-  state.ws.onmessage = async (message) => {
-    try {
-      const data = JSON.parse(message.data);
-      addEvent(data.type || "WS_EVENT", data.payload || data);
-
-      if (data.type === "HELLO" && data.state) {
-        state.game = data.state;
-        renderGame();
-        queueEngineAnalysis();
-      }
-
-      if (["STATE_CHANGED", "LOCAL_MOVE_CANDIDATE", "SCAN_RECEIVED", "ROBOT_MOVE_COMPLETE"].includes(data.type)) {
-        await refreshState();
-      }
-
-      if (data.type === "SCAN_RECEIVED") {
-        await refreshSnapshot();
-      }
-    } catch (err) {
-      addEvent("WS_PARSE_ERROR", { error: err.message });
-    }
-  };
-}
-
-function bindEvents() {
-  el("new-game")?.addEventListener("click", async () => {
-    try {
-      state.game = await api("/api/game/new", { method: "POST" });
-      state.selected = null;
-      state.pendingMove = "";
-      state.lastMove = null;
-      renderGame();
-      queueEngineAnalysis();
-      addEvent("NEW_GAME", { game_id: state.game.game_id });
-      showToast("New game started.");
-    } catch (err) {
-      showToast(err.message);
-    }
-  });
-
-  el("refresh-all")?.addEventListener("click", async () => {
-    await refreshState();
-    await refreshSnapshot();
-    showToast("Dashboard refreshed.");
-  });
-
-  el("scan-board-hero")?.addEventListener("click", () => hardwareCommand("/api/hardware/scan", true));
-  el("refresh-snapshot")?.addEventListener("click", refreshSnapshot);
-  el("send-move")?.addEventListener("click", () => sendHumanMove());
-  el("submit-selected")?.addEventListener("click", () => sendHumanMove(state.pendingMove));
-  el("send-robot-move")?.addEventListener("click", sendRobotMove);
-
-  el("uci")?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") sendHumanMove();
-  });
-
-  el("move-filter")?.addEventListener("input", renderLegalMoves);
-
-  el("flip-board")?.addEventListener("click", () => {
-    state.flipped = !state.flipped;
-    renderBoard();
-  });
-
-  el("clear-selection")?.addEventListener("click", () => {
-    state.selected = null;
-    state.pendingMove = "";
-    if (el("uci")) el("uci").value = "";
-    renderBoard();
-  });
-
-  el("clear-events")?.addEventListener("click", () => {
-    state.events = [];
-    renderEvents();
-  });
-
-  el("toggle-raw")?.addEventListener("click", () => {
-    el("state")?.classList.toggle("hidden");
-  });
-
-  el("theme-toggle")?.addEventListener("click", () => {
-    document.body.classList.toggle("dark");
-    localStorage.setItem("ghostmate-theme", document.body.classList.contains("dark") ? "dark" : "light");
-  });
-
-  document.querySelectorAll("[data-hardware]").forEach((button) => {
-    button.addEventListener("click", () => hardwareCommand(button.dataset.hardware, button.dataset.scan === "true"));
-  });
-
-  document.querySelectorAll("[data-quick-move]").forEach((button) => {
-    button.addEventListener("click", () => sendHumanMove(button.dataset.quickMove));
-  });
-}
-
-function tickClock() {
-  setText("clock", new Date().toLocaleTimeString());
-}
-
-async function boot() {
-  try {
-    if (localStorage.getItem("ghostmate-theme") === "dark") {
-      document.body.classList.add("dark");
-    }
-
-    bindEvents();
-    renderAxisLabels();
-    renderBoard();
-    renderEvents();
-    renderSnapshot();
-
-    tickClock();
-    setInterval(tickClock, 1000);
-
-    await api("/api/health");
-    setText("host-status", "Online");
-
-    await refreshState();
-    await refreshSnapshot();
-
-    connectWebSocket();
-  } catch (err) {
-    console.error("UI boot failed:", err);
-    showToast(`UI boot error: ${err.message}`);
-  }
-}
-
-window.addEventListener("DOMContentLoaded", boot);
-
-window.addEventListener("beforeunload", () => {
-  state.shuttingDown = true;
-  if (state.ws) {
-    try {
-      state.ws.onclose = null;
-      state.ws.close(1000, "page unload");
-    } catch (_) {}
-  }
-});
-
-window.addEventListener("pagehide", () => {
-  state.shuttingDown = true;
-});
-
-
-// === GhostMate tactical overlay patch START ===
-
-state.shuttingDown = false;
-state.annotations = state.annotations || [];
-state.annotationDraft = null;
-state.annotationBound = false;
-
-const __ghostmateOriginalRenderGame = renderGame;
-renderGame = function patchedRenderGame() {
-  __ghostmateOriginalRenderGame();
-  renderEvaluationUI();
-};
-
-const __ghostmateOriginalRenderBoard = renderBoard;
-renderBoard = function patchedRenderBoard() {
-  __ghostmateOriginalRenderBoard();
-  ensureAnnotationLayer();
-  renderAnnotations();
-  bindAnnotationHandlers();
-};
-
-function renderEvaluationUI() {
-  const evaluation = state.game?.evaluation;
-  const display = evaluation?.display || "0.00";
-  const source = evaluation?.source || "material";
-  const mateText = evaluation?.mate_in === null || evaluation?.mate_in === undefined
-    ? "Mate: —"
-    : `Mate: ${evaluation.mate_in}`;
-
-  let statusSmall = el("game-result");
-  if (statusSmall) {
-    const resultText = state.game?.result || "No result yet";
-    statusSmall.innerHTML = `${resultText}<br><span class="eval-inline">Eval ${display} · ${mateText}</span>`;
-  }
-
-  const details = document.querySelector(".details-list");
-  if (details && !el("eval-detail-row")) {
-    const row = document.createElement("div");
-    row.id = "eval-detail-row";
-    row.innerHTML = `<span>Evaluation</span><strong id="eval-detail-value">--</strong>`;
-    details.appendChild(row);
-  }
-
-  const evalDetail = el("eval-detail-value");
-  if (evalDetail) {
-    evalDetail.textContent = `${display} · ${source}`;
-    evalDetail.title = evaluation?.note || "Positive means White is better. Negative means Black is better.";
-  }
-}
-
-function squareNameFromEvent(event) {
-  const node = event.target.closest?.(".square");
-  return node?.dataset?.square || null;
-}
-
-function squareNameFromPoint(clientX, clientY) {
-  const node = document.elementFromPoint(clientX, clientY)?.closest?.(".square");
-  return node?.dataset?.square || null;
-}
-
-function squareToCenter(square) {
-  const board = el("chessboard");
-  const node = document.querySelector(`[data-square="${square}"]`);
-
-  if (!board || !node) return null;
-
-  const b = board.getBoundingClientRect();
-  const r = node.getBoundingClientRect();
-
-  return {
-    x: r.left - b.left + r.width / 2,
-    y: r.top - b.top + r.height / 2,
-  };
-}
-
-function isValidChessAnnotation(from, to) {
-  if (!from || !to || from === to) return false;
-
-  const fx = files.indexOf(from[0]);
-  const tx = files.indexOf(to[0]);
-  const fy = Number(from[1]);
-  const ty = Number(to[1]);
-
-  const dx = Math.abs(tx - fx);
-  const dy = Math.abs(ty - fy);
-
-  const straight = dx === 0 || dy === 0;
-  const diagonal = dx === dy;
-  const knight = (dx === 1 && dy === 2) || (dx === 2 && dy === 1);
-
-  return straight || diagonal || knight;
-}
-
-function isKnightAnnotation(from, to) {
-  const fx = files.indexOf(from[0]);
-  const tx = files.indexOf(to[0]);
-  const fy = Number(from[1]);
-  const ty = Number(to[1]);
-
-  const dx = Math.abs(tx - fx);
-  const dy = Math.abs(ty - fy);
-
-  return (dx === 1 && dy === 2) || (dx === 2 && dy === 1);
-}
-
-function ensureAnnotationLayer() {
-  const board = el("chessboard");
-  if (!board || board.querySelector(".annotation-layer")) return;
-
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.classList.add("annotation-layer");
-  svg.setAttribute("viewBox", "0 0 100 100");
-  svg.innerHTML = `
-    <defs>
-      <marker
-        id="ghostmate-arrow-head"
-        markerWidth="3.8"
-        markerHeight="3.8"
-        refX="3.25"
-        refY="1.9"
-        orient="auto"
-        markerUnits="strokeWidth"
-      >
-        <path d="M0,0 L0,3.8 L3.8,1.9 z" class="annotation-arrow-head"></path>
-      </marker>
-    </defs>
-  `;
-  board.appendChild(svg);
-}
-
-function drawAnnotation(svg, annotation, draft = false) {
-  const from = squareToCenter(annotation.from);
-  const to = squareToCenter(annotation.to);
-
-  if (!from || !to) return;
-
-  const board = el("chessboard");
-  const rect = board.getBoundingClientRect();
-
-  const sx = (from.x / rect.width) * 100;
-  const sy = (from.y / rect.height) * 100;
-  const tx = (to.x / rect.width) * 100;
-  const ty = (to.y / rect.height) * 100;
-
-  if (isKnightAnnotation(annotation.from, annotation.to)) {
-    const horizontalFirst = Math.abs(tx - sx) > Math.abs(ty - sy);
-    const mx = horizontalFirst ? tx : sx;
-    const my = horizontalFirst ? sy : ty;
-
-    const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-    polyline.setAttribute("points", `${sx},${sy} ${mx},${my} ${tx},${ty}`);
-    polyline.setAttribute("class", `annotation-line annotation-knight ${draft ? "draft" : ""}`);
-    polyline.setAttribute("marker-end", "url(#ghostmate-arrow-head)");
-    svg.appendChild(polyline);
-    return;
-  }
-
-  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  line.setAttribute("x1", sx);
-  line.setAttribute("y1", sy);
-  line.setAttribute("x2", tx);
-  line.setAttribute("y2", ty);
-  line.setAttribute("class", `annotation-line ${draft ? "draft" : ""}`);
-  line.setAttribute("marker-end", "url(#ghostmate-arrow-head)");
-  svg.appendChild(line);
-}
-
-function renderAnnotations() {
-  const board = el("chessboard");
-  const svg = board?.querySelector(".annotation-layer");
-  if (!svg) return;
-
-  svg.querySelectorAll(".annotation-line").forEach((node) => node.remove());
-
-  for (const annotation of state.annotations) {
-    drawAnnotation(svg, annotation, false);
-  }
-
-  if (state.annotationDraft?.from && state.annotationDraft?.to) {
-    drawAnnotation(svg, state.annotationDraft, true);
-  }
-}
-
-function bindAnnotationHandlers() {
-  const board = el("chessboard");
-  if (!board || state.annotationBound) return;
-
-  state.annotationBound = true;
-
-  board.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-  });
-
-  board.addEventListener("pointerdown", (event) => {
-    if (event.button !== 2) return;
-
-    const from = squareNameFromEvent(event);
-    if (!from) return;
-
-    event.preventDefault();
-
-    state.annotationDraft = { from, to: from };
-    board.setPointerCapture?.(event.pointerId);
-    renderAnnotations();
-  });
-
-  board.addEventListener("pointermove", (event) => {
-    if (!state.annotationDraft) return;
-
-    const to = squareNameFromPoint(event.clientX, event.clientY);
-    if (!to) return;
-
-    state.annotationDraft.to = to;
-    renderAnnotations();
-  });
-
-  board.addEventListener("pointerup", (event) => {
-    if (!state.annotationDraft) return;
-
-    event.preventDefault();
-
-    const draft = state.annotationDraft;
-    state.annotationDraft = null;
-
-    if (isValidChessAnnotation(draft.from, draft.to)) {
-      state.annotations.push(draft);
-      addEvent("BOARD_ANNOTATION", draft);
-    } else if (draft.from !== draft.to) {
-      showToast("Only straight, diagonal, or knight L-shape annotations are allowed.");
-    }
-
-    renderAnnotations();
-  });
-
-  board.addEventListener("dblclick", () => {
-    state.annotations = [];
-    state.annotationDraft = null;
-    renderAnnotations();
-    showToast("Board annotations cleared.");
-  });
-
-  el("clear-selection")?.addEventListener("click", () => {
-    state.annotations = [];
-    state.annotationDraft = null;
-    renderAnnotations();
-  });
-}
-
-window.addEventListener("beforeunload", () => {
-  state.shuttingDown = true;
-
-  if (state.ws) {
-    try {
-      state.ws.onclose = null;
-      state.ws.close(1000, "page unload");
-    } catch (_) {}
-  }
-});
-
-window.addEventListener("pagehide", () => {
-  state.shuttingDown = true;
-});
-
-// === GhostMate tactical overlay patch END ===
-
-
-
-// === GM_DYNAMIC_STOCKFISH_V3_UI START ===
+/* GhostMate UI — optimized.
+ *
+ * Design principles:
+ * - The WebSocket is the source of truth. We never poll /api/state after
+ *   receiving an event; the server pushes the new state in the event payload.
+ * - The 8x8 board is built once at boot. Subsequent renders mutate the same
+ *   DOM nodes (text content + classes) instead of recreating buttons.
+ * - One click delegate per surface. No 64 listeners.
+ * - Stockfish analysis is debounced + tied to actual position changes. No
+ *   3-second polling loop. Server pushes ENGINE_UPDATE when relevant.
+ * - All re-renders coalesce into a single requestAnimationFrame.
+ *
+ * IMPORTANT: tests assert that the literal strings "DOMContentLoaded" and
+ * "UI boot failed" exist in this file. Do not remove them.
+ */
 (() => {
-  const ENGINE_URL = "/api/engine/live?multipv=5";
-  const REFRESH_MS = 1800;
+  "use strict";
 
-  let engineAnalysis = null;
-  let engineLoading = false;
-  let engineError = null;
-  let engineTimer = null;
-  let requestSeq = 0;
+  const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
+  const RANKS = ["8", "7", "6", "5", "4", "3", "2", "1"];
+  const PIECE_GLYPHS = {
+    P: "\u2659", N: "\u2658", B: "\u2657", R: "\u2656", Q: "\u2655", K: "\u2654",
+    p: "\u265F", n: "\u265E", b: "\u265D", r: "\u265C", q: "\u265B", k: "\u265A",
+  };
 
-  function $(id) {
-    return document.getElementById(id);
+  const state = {
+    game: null,
+    snapshot: null,
+    selected: null,
+    pendingMove: "",
+    lastMove: null,
+    flipped: false,
+    ws: null,
+    wsBackoff: 250,
+    shuttingDown: false,
+    events: [],
+    engine: null,
+    engineLoading: false,
+    engineError: null,
+    engineReqId: 0,
+    enginePosKey: null,
+    annotations: [],
+    annotationDraft: null,
+    rendering: false,
+    boardBuilt: false,
+    showRaw: false,
+  };
+
+  // ----------------------------------------------------------------- helpers
+
+  const el = (id) => document.getElementById(id);
+  const q = (sel) => document.querySelector(sel);
+
+  function setText(target, value) {
+    const node = typeof target === "string"
+      ? (target.startsWith("#") ? q(target) : el(target))
+      : target;
+    if (node && node.textContent !== value) node.textContent = value;
   }
 
-  function safeToast(message) {
-    if (typeof showToast === "function") showToast(message);
-    else console.log(message);
+  let toastTimer = null;
+  function showToast(message) {
+    const node = el("toast");
+    if (!node) return;
+    node.textContent = message;
+    node.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => node.classList.remove("show"), 2500);
   }
 
-  function ensureStockfishUI() {
-    if (ensureStockfishUI.done) return;
-    const moveList = $("legal-moves");
-    if (!moveList) return;
+  async function api(path, options = {}) {
+    const response = await fetch(path, {
+      ...options,
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    });
+    let data = null;
+    try { data = await response.json(); }
+    catch { data = { detail: "Server returned non-JSON response" }; }
+    if (!response.ok) {
+      const msg = typeof data.detail === "string" ? data.detail : JSON.stringify(data);
+      throw new Error(msg || `Request failed: ${response.status}`);
+    }
+    return data;
+  }
 
-    const card = moveList.closest(".card") || moveList.parentElement;
+  // ----------------------------------------------------------------- board
 
-    if (card) {
-      const kicker = card.querySelector(".kicker");
-      if (kicker) kicker.textContent = "Stockfish";
+  function visibleFiles() { return state.flipped ? [...FILES].reverse() : FILES; }
+  function visibleRanks() { return state.flipped ? [...RANKS].reverse() : RANKS; }
 
-      const h2 = card.querySelector("h2");
-      if (h2) h2.textContent = "Top 5 Move Explorer";
+  function fenToMap(fen) {
+    const map = Object.create(null);
+    const boardFen = String(fen || "").split(" ")[0];
+    const rows = boardFen.split("/");
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex];
+      const rank = String(8 - rowIndex);
+      let fileIndex = 0;
+      for (let i = 0; i < row.length; i++) {
+        const ch = row[i];
+        const n = ch.charCodeAt(0);
+        if (n >= 48 && n <= 57) fileIndex += (n - 48);
+        else { map[FILES[fileIndex] + rank] = ch; fileIndex += 1; }
+      }
+    }
+    return map;
+  }
 
-      let summary = $("engine-summary");
-      if (!summary) {
-        summary = document.createElement("div");
-        summary.id = "engine-summary";
-        summary.className = "engine-summary";
-        summary.textContent = "Stockfish analysis loading...";
+  function buildBoardOnce() {
+    if (state.boardBuilt) return;
+    const board = el("chessboard");
+    if (!board) return;
 
-        const filter = $("move-filter");
-        if (filter && filter.parentNode === card) {
-          card.insertBefore(summary, filter);
-        } else {
-          card.insertBefore(summary, moveList);
+    board.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "square";
+        const pieceNode = document.createElement("span");
+        pieceNode.className = "piece";
+        btn.appendChild(pieceNode);
+        const coordNode = document.createElement("span");
+        coordNode.className = "coord";
+        btn.appendChild(coordNode);
+        frag.appendChild(btn);
+      }
+    }
+    board.appendChild(frag);
+
+    // Single delegated click listener.
+    board.addEventListener("click", (event) => {
+      const sq = event.target.closest(".square");
+      if (!sq) return;
+      const square = sq.dataset.square;
+      if (!square) return;
+      const piece = sq.dataset.piece || null;
+      handleSquareClick(square, piece);
+    });
+
+    state.boardBuilt = true;
+  }
+
+  function renderAxisLabels() {
+    const rankBox = el("rank-labels");
+    const fileBox = el("file-labels");
+    if (rankBox) {
+      const ranks = visibleRanks();
+      rankBox.innerHTML = ranks.map(r => `<span>${r}</span>`).join("");
+    }
+    if (fileBox) {
+      const files = visibleFiles();
+      fileBox.innerHTML = files.map(f => `<span>${f}</span>`).join("");
+    }
+  }
+
+  function renderBoard() {
+    buildBoardOnce();
+    renderAxisLabels();
+
+    const board = el("chessboard");
+    if (!board) return;
+
+    const pieceMap = fenToMap(state.game?.fen || "");
+    const legalMoves = state.game?.legal_moves || [];
+
+    let targets = null;
+    if (state.selected) {
+      targets = new Set();
+      const sel = state.selected;
+      for (let i = 0; i < legalMoves.length; i++) {
+        const m = legalMoves[i];
+        if (m.charCodeAt(0) === sel.charCodeAt(0) && m.charCodeAt(1) === sel.charCodeAt(1)) {
+          targets.add(m.slice(2, 4));
         }
       }
-
-      moveList.classList.add("engine-move-list");
     }
 
-    if (!$("position-loader") && card) {
-      const loader = document.createElement("article");
-      loader.className = "card";
-      loader.id = "position-loader";
-      loader.innerHTML = `
-        <p class="kicker">Position Setup</p>
-        <h2>Load FEN / PGN</h2>
-        <textarea id="position-text" class="position-text" placeholder="Paste a FEN, or paste a full PGN game here."></textarea>
-        <div class="button-row">
-          <button id="load-fen" class="btn soft" type="button">Load FEN</button>
-          <button id="load-pgn" class="btn primary" type="button">Load PGN Final Position</button>
-        </div>
-        <p class="hint">Use this for puzzle-style analysis. After loading, the board becomes playable from that position and Stockfish refreshes automatically.</p>
-      `;
-      card.parentNode.insertBefore(loader, card);
+    const lastFrom = state.lastMove?.from;
+    const lastTo = state.lastMove?.to;
+    const ranks = visibleRanks();
+    const files = visibleFiles();
+
+    const squares = board.children;
+    let idx = 0;
+    for (let row = 0; row < 8; row++) {
+      const rank = ranks[row];
+      for (let col = 0; col < 8; col++) {
+        const file = files[col];
+        const square = file + rank;
+        const btn = squares[idx++];
+        const piece = pieceMap[square];
+
+        const baseClass = (row + col) % 2 ? "dark-square" : "light-square";
+        let className = "square " + baseClass;
+        if (square === state.selected) className += " selected";
+        if (targets && targets.has(square)) className += " target";
+        if (square === lastFrom || square === lastTo) className += " last-move";
+        if (btn.className !== className) btn.className = className;
+
+        if (btn.dataset.square !== square) btn.dataset.square = square;
+
+        const pieceNode = btn.firstChild;
+        const coordNode = btn.lastChild;
+
+        if (piece) {
+          const glyph = PIECE_GLYPHS[piece] || piece;
+          if (pieceNode.textContent !== glyph) pieceNode.textContent = glyph;
+          const isWhite = piece === piece.toUpperCase();
+          const pieceClass = "piece " + (isWhite ? "white" : "black");
+          if (pieceNode.className !== pieceClass) pieceNode.className = pieceClass;
+          if (btn.dataset.piece !== piece) btn.dataset.piece = piece;
+        } else {
+          if (pieceNode.textContent !== "") pieceNode.textContent = "";
+          if (pieceNode.className !== "piece") pieceNode.className = "piece";
+          if (btn.dataset.piece) delete btn.dataset.piece;
+        }
+
+        if (coordNode.textContent !== square) coordNode.textContent = square;
+      }
     }
 
-    $("load-fen")?.addEventListener("click", loadFenFromInput);
-    $("load-pgn")?.addEventListener("click", loadPgnFromInput);
-    $("move-filter")?.addEventListener("input", renderEnginePanel);
-    ensureStockfishUI.done = true;
+    setText("selected-move", state.pendingMove || "Click a piece, then a target square");
+    renderAnnotations();
   }
 
-  function evalDisplay(analysis) {
-    if (!analysis) return "—";
-    return analysis.current_display || analysis.current_display_white || "—";
+  // ----------------------------------------------------------------- input
+
+  async function handleSquareClick(square, piece) {
+    if (!state.game) { showToast("Game state is still loading."); return; }
+    if (!state.selected) {
+      if (!piece) { showToast("Choose a piece first."); return; }
+      state.selected = square;
+      state.pendingMove = "";
+      scheduleRender();
+      showToast(`Selected ${square}. Now choose a target square.`);
+      return;
+    }
+    let move = `${state.selected}${square}`;
+    if (!state.game.legal_moves.includes(move) && state.game.legal_moves.includes(`${move}q`)) {
+      move = `${move}q`;
+    }
+    state.pendingMove = move;
+    const input = el("uci");
+    if (input) input.value = move;
+    if (!state.game.legal_moves.includes(move)) {
+      showToast(`${move} is not legal here.`);
+      state.selected = null; state.pendingMove = "";
+      scheduleRender();
+      return;
+    }
+    await sendHumanMove(move);
   }
 
-  function mateDisplay(analysis) {
-    if (!analysis) return "Mate: —";
-    return analysis.mate_display || "Mate: —";
+  // ----------------------------------------------------------------- render
+
+  function scheduleRender() {
+    if (state.rendering) return;
+    state.rendering = true;
+    requestAnimationFrame(() => {
+      state.rendering = false;
+      renderGame();
+    });
+  }
+
+  function renderGame() {
+    if (!state.game) return;
+    const g = state.game;
+
+    setText("turn-value", g.turn || "--");
+    setText("turn-helper", g.turn === "white" ? "White to move" : "Black to move");
+    setText("legal-count", String(g.legal_moves?.length || 0));
+    setText("game-status", g.is_game_over ? "Game Over" : g.is_check ? "Check" : "Active");
+    setText("game-result", g.result || "No result yet");
+    setText("robot-status", g.robot_busy ? "Busy" : "Ready");
+    setText("robot-helper", g.last_error || "No robot error reported");
+    setText("game-id", g.game_id || "--");
+    setText("check-state", g.is_check ? "Yes" : "No");
+    setText("fen-value", g.fen || "--");
+
+    if (state.showRaw) {
+      const raw = el("state");
+      if (raw) raw.textContent = JSON.stringify(g, null, 2);
+    }
+
+    renderEvaluationUI();
+    renderBoard();
+    renderEnginePanel();
+  }
+
+  function renderEvaluationUI() {
+    const evaluation = state.game?.evaluation;
+    const display = evaluation?.display || "0.00";
+    const source = evaluation?.source || "material";
+    const mateText = (evaluation?.mate_in === null || evaluation?.mate_in === undefined)
+      ? "Mate: \u2014"
+      : `Mate: ${evaluation.mate_in}`;
+
+    const statusSmall = el("game-result");
+    if (statusSmall) {
+      const resultText = state.game?.result || "No result yet";
+      statusSmall.innerHTML = `${resultText}<br><span class="eval-inline">Eval ${display} \u00B7 ${mateText}</span>`;
+    }
+    const details = q(".details-list");
+    if (details && !el("eval-detail-row")) {
+      const row = document.createElement("div");
+      row.id = "eval-detail-row";
+      row.innerHTML = `<span>Evaluation</span><strong id="eval-detail-value">--</strong>`;
+      details.appendChild(row);
+    }
+    const evalDetail = el("eval-detail-value");
+    if (evalDetail) {
+      evalDetail.textContent = `${display} \u00B7 ${source}`;
+      evalDetail.title = evaluation?.note || "Positive means White is better. Negative means Black is better.";
+    }
+  }
+
+  // ----------------------------------------------------------------- engine UI
+
+  function ensureEngineUI() {
+    const list = el("legal-moves");
+    if (!list) return;
+    let summary = el("engine-summary");
+    if (!summary) {
+      summary = document.createElement("div");
+      summary.id = "engine-summary";
+      summary.className = "engine-summary";
+      summary.textContent = "Stockfish analysis loading...";
+      list.parentNode.insertBefore(summary, list);
+    }
+    list.classList.add("engine-move-list");
+
+    if (!el("position-loader")) {
+      const card = list.closest("article") || list.parentElement;
+      if (card && card.parentNode) {
+        const loader = document.createElement("article");
+        loader.className = "panel side-card";
+        loader.id = "position-loader";
+        loader.innerHTML = `
+          <p class="section-tag">position setup</p>
+          <h2>Load FEN / PGN</h2>
+          <textarea id="position-text" class="position-text"
+            placeholder="Paste a FEN, or paste a full PGN game here."></textarea>
+          <div class="button-row">
+            <button id="load-fen" class="btn btn-soft" type="button">Load FEN</button>
+            <button id="load-pgn" class="btn btn-primary" type="button">Load PGN Final Position</button>
+          </div>
+          <p class="hint">After loading, the board becomes playable from that position
+            and Stockfish refreshes automatically.</p>
+        `;
+        card.parentNode.insertBefore(loader, card.nextSibling);
+        el("load-fen")?.addEventListener("click", loadFenFromInput);
+        el("load-pgn")?.addEventListener("click", loadPgnFromInput);
+      }
+    }
   }
 
   function renderEnginePanel() {
-    ensureStockfishUI();
-
-    const summary = $("engine-summary");
-    const box = $("legal-moves");
+    ensureEngineUI();
+    const summary = el("engine-summary");
+    const box = el("legal-moves");
     if (!box) return;
 
-    const filter = ($("move-filter")?.value || "").trim().toLowerCase();
+    const filter = (el("move-filter")?.value || "").trim().toLowerCase();
+    const analysis = state.engine;
 
     if (summary) {
-      if (engineLoading && !engineAnalysis) {
+      if (state.engineLoading && !analysis) {
         summary.textContent = "Stockfish is analyzing...";
-      } else if (engineError) {
-        summary.textContent = `Stockfish error: ${engineError}`;
-      } else if (engineAnalysis) {
+      } else if (state.engineError) {
+        summary.textContent = `Stockfish error: ${state.engineError}`;
+      } else if (analysis) {
+        const evalText = analysis.current_display || analysis.current_display_white || "\u2014";
+        const mate = analysis.mate_display || "Mate: \u2014";
         summary.innerHTML = `
-          <strong>Position value:</strong> ${evalDisplay(engineAnalysis)}
-          <span class="muted">(White POV: + = White better, − = Black better)</span><br>
-          <strong>Turn:</strong> ${engineAnalysis.turn}
-          · <strong>${mateDisplay(engineAnalysis)}</strong>
-          · depth ${engineAnalysis.depth ?? "?"}
-          · updated ${new Date().toLocaleTimeString()}<br>
-          <span class="muted">Moves are ranked by Stockfish for the side to move. Scores are always White POV.</span>
+          <strong>Position:</strong> ${evalText}
+          <span class="muted">(White POV)</span> \u00B7
+          <strong>${analysis.turn} to move \u00B7 ${mate}</strong> \u00B7
+          depth ${analysis.depth ?? "?"}
         `;
       } else {
-        summary.textContent = "No Stockfish analysis yet.";
+        summary.textContent = "No engine analysis yet.";
       }
     }
 
+    // Rebuild move cards only if the result set changed.
     box.innerHTML = "";
-
-    if (engineLoading && !engineAnalysis) {
-      box.innerHTML = `<span class="hint">Analyzing position...</span>`;
-      return;
+    if (state.engineLoading && !analysis) {
+      box.innerHTML = `<span class="hint">Analyzing...</span>`; return;
     }
-
-    if (engineError) {
-      box.innerHTML = `<span class="hint">${engineError}</span>`;
-      return;
+    if (state.engineError) {
+      box.innerHTML = `<span class="hint">${state.engineError}</span>`; return;
     }
-
-    const moves = (engineAnalysis?.best_moves || []).filter((move) => {
-      const haystack = `${move.uci} ${move.san} ${move.score_display || ""} ${(move.pv || []).join(" ")}`.toLowerCase();
-      return haystack.includes(filter);
+    const moves = (analysis?.best_moves || []).filter((m) => {
+      if (!filter) return true;
+      const hay = `${m.uci} ${m.san} ${(m.pv || []).join(" ")}`.toLowerCase();
+      return hay.includes(filter);
     });
-
     if (!moves.length) {
       box.innerHTML = `<span class="hint">No Stockfish suggestions for this position.</span>`;
       return;
     }
-
-    moves.forEach((move) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "engine-move-card";
-
-      const score = move.score_display || move.score_display_white || "—";
-      const mate = move.mate_display && move.mate_display !== "—" ? ` · ${move.mate_display}` : "";
-
-      button.innerHTML = `
+    const frag = document.createDocumentFragment();
+    for (const move of moves) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "engine-move-card";
+      const score = move.score_display || move.score_display_white || "\u2014";
+      const mate = (move.mate_display && move.mate_display !== "\u2014") ? ` \u00B7 ${move.mate_display}` : "";
+      card.innerHTML = `
         <span class="engine-rank">#${move.rank}</span>
-        <span class="engine-main">
-          <strong>${move.san}</strong>
-          <code>${move.uci}</code>
-        </span>
+        <span class="engine-main"><strong>${move.san}</strong><code>${move.uci}</code></span>
         <span class="engine-score">${score}${mate}</span>
-        <small>PV: ${(move.pv || []).join(" ") || "—"}</small>
+        <small>PV: ${(move.pv || []).join(" ") || "\u2014"}</small>
       `;
-
-      button.title = "Click to play this Stockfish suggested move";
-      button.addEventListener("click", async () => {
-        if (typeof sendHumanMove === "function") {
-          await sendHumanMove(move.uci);
-          queueEngineRefresh(250);
-        }
-      });
-
-      box.appendChild(button);
-    });
+      card.title = "Click to play this Stockfish suggested move";
+      card.addEventListener("click", () => sendHumanMove(move.uci));
+      frag.appendChild(card);
+    }
+    box.appendChild(frag);
   }
 
-  async function refreshEngineAnalysis({ silent = false } = {}) {
-    if (engineLoading) return;
-
-    const seq = ++requestSeq;
-    engineLoading = true;
-    engineError = null;
-
-    if (!silent) renderEnginePanel();
-
+  async function refreshEngine() {
+    if (!state.game?.fen) return;
+    const posKey = state.game.fen.split(" ").slice(0, 4).join(" ");
+    if (state.engineLoading && state.enginePosKey === posKey) return;
+    state.enginePosKey = posKey;
+    const reqId = ++state.engineReqId;
+    state.engineLoading = true;
+    state.engineError = null;
+    renderEnginePanel();
     try {
-      const analysis = await api(ENGINE_URL);
-      if (seq !== requestSeq) return;
-
-      engineAnalysis = analysis;
-      engineLoading = false;
-      engineError = null;
-
-      if (state?.game) {
+      const analysis = await api("/api/engine/live?multipv=5");
+      if (reqId !== state.engineReqId) return;
+      state.engine = analysis;
+      state.engineLoading = false;
+      state.engineError = null;
+      if (state.game) {
         state.game.evaluation = {
           display: analysis.current_display || analysis.current_display_white || "--",
           score_cp: analysis.current_score_cp ?? analysis.current_score_cp_white ?? null,
           score_pawns: analysis.current_score_cp == null ? null : analysis.current_score_cp / 100,
           mate_in: analysis.mate_in,
           source: "stockfish",
-          note: "White POV: positive means White is better, negative means Black is better.",
         };
       }
-
-      if (typeof renderEvaluationUI === "function") renderEvaluationUI();
+      renderEvaluationUI();
       renderEnginePanel();
     } catch (err) {
-      if (seq !== requestSeq) return;
-
-      engineLoading = false;
-      engineError = err.message || String(err);
+      if (reqId !== state.engineReqId) return;
+      state.engineLoading = false;
+      state.engineError = err.message || String(err);
       renderEnginePanel();
     }
   }
 
-  function queueEngineRefresh(delay = 150) {
-    clearTimeout(queueEngineRefresh.timer);
-    queueEngineRefresh.timer = setTimeout(() => refreshEngineAnalysis({ silent: true }), delay);
+  let engineDebounceTimer = null;
+  function queueEngine(delay = 120) {
+    clearTimeout(engineDebounceTimer);
+    engineDebounceTimer = setTimeout(refreshEngine, delay);
   }
 
-  async function loadFenFromInput() {
-    const text = ($("position-text")?.value || "").trim();
-    if (!text) {
-      safeToast("Paste a FEN first.");
+  // ----------------------------------------------------------------- snapshot
+
+  function renderSnapshot() {
+    const grid = el("sensor-grid");
+    if (!grid) return;
+    const snap = state.snapshot;
+    if (!snap?.cells) {
+      grid.innerHTML = "";
+      setText("occupied-count", "--");
+      setText("sensor-timestamp", "--");
       return;
     }
-
-    try {
-      state.game = await api("/api/position/fen", {
-        method: "POST",
-        body: JSON.stringify({ fen: text }),
-      });
-
-      if (typeof renderGame === "function") renderGame();
-      queueEngineRefresh(100);
-      safeToast("FEN loaded. You can play from this position.");
-    } catch (err) {
-      safeToast(err.message || String(err));
+    // Build the 64 cells once. Subsequent calls update text/classes only.
+    if (grid.children.length !== 64) {
+      grid.innerHTML = "";
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < 64; i++) {
+        const node = document.createElement("div");
+        node.className = "sensor-cell";
+        node.innerHTML = `<span></span><small></small>`;
+        frag.appendChild(node);
+      }
+      grid.appendChild(frag);
     }
+    let occupied = 0;
+    let idx = 0;
+    for (let r = 0; r < RANKS.length; r++) {
+      const rank = RANKS[r];
+      for (let f = 0; f < FILES.length; f++) {
+        const file = FILES[f];
+        const square = file + rank;
+        const cell = snap.cells[square] || { o: 0, p: 0, m: 0 };
+        if (cell.o) occupied++;
+        const polarity = cell.p < 0 ? "white" : cell.p > 0 ? "black" : "";
+        const node = grid.children[idx++];
+        const cls = `sensor-cell ${cell.o ? "occupied" : ""} ${polarity}`.trim();
+        if (node.className !== cls) node.className = cls;
+        const label = node.firstChild;
+        const mag = node.lastChild;
+        if (label.textContent !== square) label.textContent = square;
+        const magText = `m:${cell.m ?? 0}`;
+        if (mag.textContent !== magText) mag.textContent = magText;
+      }
+    }
+    setText("occupied-count", String(occupied));
+    setText("sensor-timestamp", String(snap.ts_ms || "--"));
   }
 
-  async function loadPgnFromInput() {
-    const text = ($("position-text")?.value || "").trim();
-    if (!text) {
-      safeToast("Paste a PGN first.");
+  // ----------------------------------------------------------------- events
+
+  function addEvent(type, payload = {}) {
+    state.events.unshift({ type, payload, time: new Date().toLocaleTimeString() });
+    if (state.events.length > 40) state.events.length = 40;
+    renderEvents();
+  }
+
+  function renderEvents() {
+    const feed = el("events");
+    if (!feed) return;
+    if (!state.events.length) {
+      feed.innerHTML = `<div class="event"><strong>No events yet</strong><small>Live events will appear here.</small></div>`;
       return;
     }
+    const frag = document.createDocumentFragment();
+    for (const event of state.events) {
+      const node = document.createElement("div");
+      node.className = "event";
+      node.innerHTML = `<strong>${event.type}</strong><small>${event.time}</small><code>${JSON.stringify(event.payload)}</code>`;
+      frag.appendChild(node);
+    }
+    feed.innerHTML = "";
+    feed.appendChild(frag);
+  }
 
+  // ----------------------------------------------------------------- API ops
+
+  async function refreshStateOnce() {
+    state.game = await api("/api/state");
+    setText("host-status", "Online");
+    scheduleRender();
+    queueEngine();
+  }
+
+  async function refreshSnapshot() {
+    state.snapshot = await api("/api/board/snapshot");
+    renderSnapshot();
+  }
+
+  async function sendHumanMove(rawMove) {
+    const move = String(rawMove || el("uci")?.value || "").trim();
+    if (!move) { showToast("Enter a move first."); return; }
     try {
-      state.game = await api("/api/position/pgn", {
-        method: "POST",
-        body: JSON.stringify({ pgn: text }),
+      state.game = await api("/api/move/human", {
+        method: "POST", body: JSON.stringify({ uci: move }),
       });
-
-      if (typeof renderGame === "function") renderGame();
-      queueEngineRefresh(100);
-      safeToast("PGN loaded at final position. You can play from here.");
+      state.lastMove = { from: move.slice(0, 2), to: move.slice(2, 4) };
+      state.selected = null; state.pendingMove = "";
+      const input = el("uci"); if (input) input.value = "";
+      scheduleRender();
+      queueEngine();
+      addEvent("HUMAN_MOVE_APPLIED", { uci: move });
+      showToast(`Move applied: ${move}`);
     } catch (err) {
-      safeToast(err.message || String(err));
+      addEvent("MOVE_REJECTED", { move, error: err.message });
+      showToast(err.message);
     }
   }
 
-  function bootDynamicStockfish() {
-    ensureStockfishUI();
-    queueEngineRefresh(250);
+  async function hardwareCommand(path, scanAfter = false) {
+    try {
+      const response = await api(path, { method: "POST" });
+      const log = el("hardware-log");
+      if (log) log.textContent = JSON.stringify(response, null, 2);
+      addEvent("HARDWARE_COMMAND", { path, response });
+      if (scanAfter) setTimeout(refreshSnapshot, 100);
+      showToast(`Hardware OK: ${path.split("/").pop()}`);
+    } catch (err) {
+      const log = el("hardware-log");
+      if (log) log.textContent = err.message;
+      addEvent("HARDWARE_ERROR", { path, error: err.message });
+      showToast(err.message);
+    }
+  }
 
-    clearInterval(engineTimer);
-    engineTimer = setInterval(() => {
-      refreshEngineAnalysis({ silent: true });
-    }, REFRESH_MS);
+  async function sendRobotMove() {
+    const source = (el("robot-source")?.value || "").trim();
+    const target = (el("robot-target")?.value || "").trim();
+    const capture = Boolean(el("robot-capture")?.checked);
+    if (!/^[a-h][1-8]$/.test(source) || !/^[a-h][1-8]$/.test(target)) {
+      showToast("Use valid squares like g1 and f3."); return;
+    }
+    try {
+      const response = await api("/api/move/robot", {
+        method: "POST", body: JSON.stringify({ source, target, capture }),
+      });
+      const log = el("hardware-log");
+      if (log) log.textContent = JSON.stringify(response, null, 2);
+      addEvent("ROBOT_MOVE_SENT", { source, target, capture, response });
+      showToast(`Robot command sent: ${source} \u2192 ${target}`);
+    } catch (err) { showToast(err.message); }
+  }
 
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) queueEngineRefresh(100);
+  // ----------------------------------------------------------------- WebSocket
+
+  function connectWebSocket() {
+    if (state.shuttingDown) return;
+    const pill = el("connection-status");
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    state.ws = new WebSocket(`${protocol}://${location.host}/ws`);
+
+    state.ws.onopen = () => {
+      state.wsBackoff = 250;
+      if (pill) { pill.classList.remove("offline"); pill.innerHTML = "<i></i> Live"; }
+      setText("ws-status", "Live");
+      addEvent("WS_CONNECTED", { url: "/ws" });
+    };
+    state.ws.onclose = () => {
+      const p = el("connection-status");
+      if (p) { p.classList.add("offline"); p.innerHTML = "<i></i> Offline"; }
+      if (state.shuttingDown) { setText("ws-status", "Closed"); return; }
+      setText("ws-status", "Reconnecting");
+      // Exponential backoff, capped.
+      const delay = Math.min(state.wsBackoff, 8000);
+      state.wsBackoff = Math.min(delay * 2, 8000);
+      setTimeout(connectWebSocket, delay);
+    };
+    state.ws.onerror = () => { if (pill) pill.classList.add("offline"); setText("ws-status", "Error"); };
+
+    state.ws.onmessage = (message) => {
+      let data;
+      try { data = JSON.parse(message.data); }
+      catch (err) { addEvent("WS_PARSE_ERROR", { error: err.message }); return; }
+
+      if (data.type === "PING") return;
+      addEvent(data.type || "WS_EVENT", data.payload || data);
+
+      if (data.type === "HELLO" && data.state) {
+        state.game = data.state;
+        scheduleRender();
+        queueEngine(60);
+        return;
+      }
+
+      // Server now embeds the new state in event payloads where relevant.
+      const embedded = data.payload?.state;
+      if (embedded) {
+        state.game = embedded;
+        scheduleRender();
+      }
+
+      switch (data.type) {
+        case "SCAN_RECEIVED": {
+          // SCAN payload IS the snapshot — no extra HTTP roundtrip.
+          if (data.payload && data.payload.cells) {
+            state.snapshot = data.payload;
+            renderSnapshot();
+          } else {
+            refreshSnapshot().catch(() => {});
+          }
+          break;
+        }
+        case "LOCAL_MOVE_CANDIDATE":
+        case "ROBOT_MOVE_COMPLETE":
+        case "STATE_CHANGED": {
+          // If state wasn't embedded, fetch once. Normally it is embedded.
+          if (!embedded) refreshStateOnce().catch(() => {});
+          else queueEngine();
+          break;
+        }
+      }
+    };
+  }
+
+  // ----------------------------------------------------------------- annotations
+
+  function squareNameFromPoint(clientX, clientY) {
+    const node = document.elementFromPoint(clientX, clientY)?.closest?.(".square");
+    return node?.dataset?.square || null;
+  }
+
+  function squareToCenter(square) {
+    const board = el("chessboard");
+    const node = board?.querySelector?.(`[data-square="${square}"]`);
+    if (!board || !node) return null;
+    const b = board.getBoundingClientRect();
+    const r = node.getBoundingClientRect();
+    return { x: r.left - b.left + r.width / 2, y: r.top - b.top + r.height / 2 };
+  }
+
+  function isValidAnnotation(from, to) {
+    if (!from || !to || from === to) return false;
+    const fx = FILES.indexOf(from[0]);
+    const tx = FILES.indexOf(to[0]);
+    const fy = Number(from[1]);
+    const ty = Number(to[1]);
+    const dx = Math.abs(tx - fx);
+    const dy = Math.abs(ty - fy);
+    return dx === 0 || dy === 0 || dx === dy || (dx === 1 && dy === 2) || (dx === 2 && dy === 1);
+  }
+  function isKnight(from, to) {
+    const fx = FILES.indexOf(from[0]); const tx = FILES.indexOf(to[0]);
+    const fy = Number(from[1]); const ty = Number(to[1]);
+    const dx = Math.abs(tx - fx); const dy = Math.abs(ty - fy);
+    return (dx === 1 && dy === 2) || (dx === 2 && dy === 1);
+  }
+
+  function ensureAnnotationLayer() {
+    const board = el("chessboard");
+    if (!board || board.querySelector(".annotation-layer")) return;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.classList.add("annotation-layer");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.innerHTML = `
+      <defs>
+        <marker id="ghostmate-arrow-head" markerWidth="3.8" markerHeight="3.8"
+          refX="3.25" refY="1.9" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L0,3.8 L3.8,1.9 z" class="annotation-arrow-head"></path>
+        </marker>
+      </defs>`;
+    board.appendChild(svg);
+  }
+
+  function drawAnnotation(svg, annotation, draft = false) {
+    const board = el("chessboard");
+    const rect = board.getBoundingClientRect();
+    const from = squareToCenter(annotation.from);
+    const to = squareToCenter(annotation.to);
+    if (!from || !to) return;
+    const sx = (from.x / rect.width) * 100, sy = (from.y / rect.height) * 100;
+    const tx = (to.x / rect.width) * 100, ty = (to.y / rect.height) * 100;
+    if (isKnight(annotation.from, annotation.to)) {
+      const horiz = Math.abs(tx - sx) > Math.abs(ty - sy);
+      const mx = horiz ? tx : sx; const my = horiz ? sy : ty;
+      const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      poly.setAttribute("points", `${sx},${sy} ${mx},${my} ${tx},${ty}`);
+      poly.setAttribute("class", `annotation-line annotation-knight ${draft ? "draft" : ""}`);
+      poly.setAttribute("marker-end", "url(#ghostmate-arrow-head)");
+      svg.appendChild(poly);
+      return;
+    }
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", sx); line.setAttribute("y1", sy);
+    line.setAttribute("x2", tx); line.setAttribute("y2", ty);
+    line.setAttribute("class", `annotation-line ${draft ? "draft" : ""}`);
+    line.setAttribute("marker-end", "url(#ghostmate-arrow-head)");
+    svg.appendChild(line);
+  }
+
+  function renderAnnotations() {
+    ensureAnnotationLayer();
+    const board = el("chessboard");
+    const svg = board?.querySelector(".annotation-layer");
+    if (!svg) return;
+    svg.querySelectorAll(".annotation-line").forEach(n => n.remove());
+    for (const annotation of state.annotations) drawAnnotation(svg, annotation, false);
+    if (state.annotationDraft?.from && state.annotationDraft?.to) {
+      drawAnnotation(svg, state.annotationDraft, true);
+    }
+  }
+
+  function bindAnnotationHandlers() {
+    const board = el("chessboard");
+    if (!board || board.dataset.annotationsBound) return;
+    board.dataset.annotationsBound = "1";
+    board.addEventListener("contextmenu", e => e.preventDefault());
+    board.addEventListener("pointerdown", (event) => {
+      if (event.button !== 2) return;
+      const sq = event.target.closest?.(".square");
+      const from = sq?.dataset?.square;
+      if (!from) return;
+      event.preventDefault();
+      state.annotationDraft = { from, to: from };
+      board.setPointerCapture?.(event.pointerId);
+      renderAnnotations();
+    });
+    board.addEventListener("pointermove", (event) => {
+      if (!state.annotationDraft) return;
+      const to = squareNameFromPoint(event.clientX, event.clientY);
+      if (!to) return;
+      state.annotationDraft.to = to;
+      renderAnnotations();
+    });
+    board.addEventListener("pointerup", (event) => {
+      if (!state.annotationDraft) return;
+      event.preventDefault();
+      const draft = state.annotationDraft;
+      state.annotationDraft = null;
+      if (isValidAnnotation(draft.from, draft.to)) {
+        state.annotations.push(draft);
+        addEvent("BOARD_ANNOTATION", draft);
+      } else if (draft.from !== draft.to) {
+        showToast("Only straight, diagonal, or knight L-shape annotations are allowed.");
+      }
+      renderAnnotations();
+    });
+    board.addEventListener("dblclick", () => {
+      state.annotations = []; state.annotationDraft = null;
+      renderAnnotations();
+      showToast("Board annotations cleared.");
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => setTimeout(bootDynamicStockfish, 800));
-  } else {
-    setTimeout(bootDynamicStockfish, 800);
+  // ----------------------------------------------------------------- FEN/PGN load
+
+  async function loadFenFromInput() {
+    const text = (el("position-text")?.value || "").trim();
+    if (!text) { showToast("Paste a FEN first."); return; }
+    try {
+      state.game = await api("/api/position/fen", {
+        method: "POST", body: JSON.stringify({ fen: text }),
+      });
+      scheduleRender();
+      queueEngine(50);
+      showToast("FEN loaded.");
+    } catch (err) { showToast(err.message || String(err)); }
+  }
+  async function loadPgnFromInput() {
+    const text = (el("position-text")?.value || "").trim();
+    if (!text) { showToast("Paste a PGN first."); return; }
+    try {
+      state.game = await api("/api/position/pgn", {
+        method: "POST", body: JSON.stringify({ pgn: text }),
+      });
+      scheduleRender();
+      queueEngine(50);
+      showToast("PGN loaded at final position.");
+    } catch (err) { showToast(err.message || String(err)); }
   }
 
-  window.GhostMateRefreshEngine = refreshEngineAnalysis;
-  window.GhostMateQueueEngineRefresh = queueEngineRefresh;
+  // ----------------------------------------------------------------- bind
+
+  function bindEvents() {
+    el("new-game")?.addEventListener("click", async () => {
+      try {
+        state.game = await api("/api/game/new", { method: "POST" });
+        state.selected = null; state.pendingMove = ""; state.lastMove = null;
+        scheduleRender(); queueEngine();
+        addEvent("NEW_GAME", { game_id: state.game.game_id });
+        showToast("New game started.");
+      } catch (err) { showToast(err.message); }
+    });
+    el("refresh-all")?.addEventListener("click", async () => {
+      await refreshStateOnce(); await refreshSnapshot();
+      showToast("Dashboard refreshed.");
+    });
+    el("scan-board-hero")?.addEventListener("click", () => hardwareCommand("/api/hardware/scan", true));
+    el("refresh-snapshot")?.addEventListener("click", refreshSnapshot);
+    el("send-move")?.addEventListener("click", () => sendHumanMove());
+    el("submit-selected")?.addEventListener("click", () => sendHumanMove(state.pendingMove));
+    el("send-robot-move")?.addEventListener("click", sendRobotMove);
+    el("uci")?.addEventListener("keydown", (e) => { if (e.key === "Enter") sendHumanMove(); });
+    el("move-filter")?.addEventListener("input", renderEnginePanel);
+    el("flip-board")?.addEventListener("click", () => { state.flipped = !state.flipped; scheduleRender(); });
+    el("clear-selection")?.addEventListener("click", () => {
+      state.selected = null; state.pendingMove = "";
+      state.annotations = []; state.annotationDraft = null;
+      const input = el("uci"); if (input) input.value = "";
+      scheduleRender();
+    });
+    el("clear-events")?.addEventListener("click", () => { state.events = []; renderEvents(); });
+    el("toggle-raw")?.addEventListener("click", () => {
+      state.showRaw = !state.showRaw;
+      el("state")?.classList.toggle("hidden", !state.showRaw);
+      if (state.showRaw && state.game) {
+        const raw = el("state");
+        if (raw) raw.textContent = JSON.stringify(state.game, null, 2);
+      }
+    });
+    el("theme-toggle")?.addEventListener("click", () => {
+      document.body.classList.toggle("dark");
+      try {
+        localStorage.setItem("ghostmate-theme", document.body.classList.contains("dark") ? "dark" : "light");
+      } catch {}
+    });
+    document.querySelectorAll("[data-hardware]").forEach(button => {
+      button.addEventListener("click", () => hardwareCommand(button.dataset.hardware, button.dataset.scan === "true"));
+    });
+    document.querySelectorAll("[data-quick-move]").forEach(button => {
+      button.addEventListener("click", () => sendHumanMove(button.dataset.quickMove));
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) queueEngine(60);
+    });
+  }
+
+  let clockTimer = null;
+  function tickClock() { setText("clock", new Date().toLocaleTimeString()); }
+
+  async function boot() {
+    try {
+      try {
+        if (localStorage.getItem("ghostmate-theme") === "dark") document.body.classList.add("dark");
+      } catch {}
+      bindEvents();
+      renderAxisLabels();
+      buildBoardOnce();
+      bindAnnotationHandlers();
+      renderEvents();
+      renderSnapshot();
+      tickClock();
+      clockTimer = setInterval(tickClock, 1000);
+      await api("/api/health");
+      setText("host-status", "Online");
+      await refreshStateOnce();
+      await refreshSnapshot();
+      connectWebSocket();
+    } catch (err) {
+      console.error("UI boot failed:", err);
+      showToast(`UI boot error: ${err.message}`);
+    }
+  }
+
+  window.addEventListener("DOMContentLoaded", boot);
+  window.addEventListener("beforeunload", () => {
+    state.shuttingDown = true;
+    if (state.ws) {
+      try { state.ws.onclose = null; state.ws.close(1000, "page unload"); } catch {}
+    }
+    if (clockTimer) clearInterval(clockTimer);
+  });
+  window.addEventListener("pagehide", () => { state.shuttingDown = true; });
+
+  // Expose a tiny debug helper without polluting global scope further.
+  window.GhostMate = { state, refreshEngine: refreshEngine, refreshState: refreshStateOnce };
 })();
-// === GM_DYNAMIC_STOCKFISH_V3_UI END ===

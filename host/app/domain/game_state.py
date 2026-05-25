@@ -1,73 +1,49 @@
+"""
+Authoritative in-memory game state, backed by python-chess.
+
+Snapshot is now cheap: no Stockfish spawn, no synchronous engine probes.
+Use the StockfishService directly for evaluation when needed (see
+api/routes.py:/engine/live). This keeps WebSocket broadcasts and state polls
+fast even on a Raspberry Pi 4.
+"""
 from __future__ import annotations
 
-import os
-from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
 
 import chess
 
-try:
-    import chess.engine
-except Exception:  # pragma: no cover
-    chess_engine = None
-
 
 PIECE_VALUES_CP: dict[chess.PieceType, int] = {
-    chess.PAWN: 100,
-    chess.KNIGHT: 320,
-    chess.BISHOP: 330,
-    chess.ROOK: 500,
-    chess.QUEEN: 900,
-    chess.KING: 0,
+    chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
+    chess.ROOK: 500, chess.QUEEN: 900, chess.KING: 0,
 }
 
 
 def make_game_id() -> str:
-    """Return a unique, human-readable game id.
-
-    The timestamp makes saved games easy to inspect, while the UUID suffix
-    prevents collisions when tests or API calls create multiple games inside
-    the same system-clock tick. Some platforms, especially Windows, can return
-    the same datetime value for back-to-back calls even when microseconds are
-    included.
-    """
+    """Unique, human-readable game id with collision-resistant UUID suffix."""
     timestamp = datetime.now(timezone.utc).strftime("game-%Y%m%d-%H%M%S-%f")
     return f"{timestamp}-{uuid4().hex[:8]}"
 
 
-def _material_score_cp(board: chess.Board) -> int:
-    """Return material-only score from White's perspective in centipawns."""
+def _material_cp(board: chess.Board) -> int:
     score = 0
-
-    for square, piece in board.piece_map().items():
-        value = PIECE_VALUES_CP[piece.piece_type]
-        score += value if piece.color == chess.WHITE else -value
-
+    for _, piece in board.piece_map().items():
+        v = PIECE_VALUES_CP[piece.piece_type]
+        score += v if piece.color == chess.WHITE else -v
     return score
 
 
 def _format_cp(cp: int) -> str:
     pawns = cp / 100
-    if abs(pawns) < 0.005:
-        return "0.00"
-    return f"{pawns:+.2f}"
+    return "0.00" if abs(pawns) < 0.005 else f"{pawns:+.2f}"
 
 
-def evaluate_position(board: chess.Board) -> dict[str, object]:
-    """
-    Evaluate the current position from White's perspective.
-
-    Positive means White is better.
-    Negative means Black is better.
-    0.00 means equal/drawn by the evaluator.
-
-    If STOCKFISH_PATH is configured, the function asks Stockfish.
-    Otherwise, it uses a safe material-only fallback.
-    """
-
+def evaluate_position(board: chess.Board) -> dict[str, Any]:
+    """Cheap material-only evaluation. Stockfish evaluation lives in StockfishService."""
     if board.is_checkmate():
-        # If it is White's turn and White is checkmated, Black is winning.
         mate_sign = -1 if board.turn == chess.WHITE else 1
         return {
             "display": "#+0" if mate_sign > 0 else "#-0",
@@ -77,83 +53,40 @@ def evaluate_position(board: chess.Board) -> dict[str, object]:
             "source": "checkmate",
             "note": "Game is already checkmate.",
         }
-
-    stockfish_path = os.getenv("STOCKFISH_PATH", "").strip()
-
-    if stockfish_path:
-        try:
-            depth = int(os.getenv("STOCKFISH_DEPTH", "14"))
-            think_time = float(os.getenv("STOCKFISH_TIME", "0.12"))
-
-            with chess.engine.SimpleEngine.popen_uci(stockfish_path) as engine:
-                info = engine.analyse(
-                    board,
-                    chess.engine.Limit(depth=depth, time=think_time),
-                )
-
-            pov_score = info["score"].pov(chess.WHITE)
-
-            if pov_score.is_mate():
-                mate = pov_score.mate()
-                shown_mate = mate if mate is not None and abs(mate) <= 20 else None
-
-                return {
-                    "display": f"#{mate:+d}" if shown_mate is not None else "Mate >20",
-                    "score_cp": None,
-                    "score_pawns": None,
-                    "mate_in": shown_mate,
-                    "source": "stockfish",
-                    "note": "Mate score from Stockfish." if shown_mate is not None else "Mate exists but is beyond display limit.",
-                }
-
-            cp = int(pov_score.score(mate_score=100000) or 0)
-
-            return {
-                "display": _format_cp(cp),
-                "score_cp": cp,
-                "score_pawns": round(cp / 100, 2),
-                "mate_in": None,
-                "source": "stockfish",
-                "note": "Positive means White is better; negative means Black is better.",
-            }
-
-        except Exception as exc:
-            cp = _material_score_cp(board)
-            return {
-                "display": _format_cp(cp),
-                "score_cp": cp,
-                "score_pawns": round(cp / 100, 2),
-                "mate_in": None,
-                "source": "material-fallback",
-                "note": f"Stockfish unavailable, using material-only fallback: {type(exc).__name__}",
-            }
-
-    cp = _material_score_cp(board)
-
+    cp = _material_cp(board)
     return {
         "display": _format_cp(cp),
         "score_cp": cp,
         "score_pawns": round(cp / 100, 2),
         "mate_in": None,
         "source": "material",
-        "note": "Material-only fallback. Configure STOCKFISH_PATH for true positional evaluation and mate search.",
+        "note": "Material-only fallback. Live Stockfish eval is at /api/engine/live.",
     }
 
 
 @dataclass
 class GameState:
-    """Authoritative in-memory game state backed by python-chess."""
+    """In-memory game state. Snapshot is allocation-light and engine-free."""
 
     board: chess.Board = field(default_factory=chess.Board)
     game_id: str = field(default_factory=make_game_id)
     robot_busy: bool = False
     last_error: str | None = None
 
+    # Cached snapshot — invalidated whenever the position changes.
+    _snapshot_cache: dict[str, Any] | None = field(default=None, repr=False)
+    _snapshot_key: tuple | None = field(default=None, repr=False)
+
+    def _invalidate(self) -> None:
+        self._snapshot_cache = None
+        self._snapshot_key = None
+
     def new_game(self, fen: str | None = None) -> None:
         self.board = chess.Board(fen) if fen else chess.Board()
         self.game_id = make_game_id()
         self.robot_busy = False
         self.last_error = None
+        self._invalidate()
 
     def legal_uci_moves(self) -> list[str]:
         return [move.uci() for move in self.board.legal_moves]
@@ -161,16 +94,16 @@ class GameState:
     def push_uci(self, uci: str) -> chess.Move:
         clean_uci = uci.strip().lower()
         move = chess.Move.from_uci(clean_uci)
-
         if move not in self.board.legal_moves:
             raise ValueError(f"Illegal move for current position: {clean_uci}")
-
         self.board.push(move)
+        self._invalidate()
         return move
 
     def push_san(self, san: str) -> chess.Move:
         move = self.board.parse_san(san.strip())
         self.board.push(move)
+        self._invalidate()
         return move
 
     def result_if_game_over(self) -> str | None:
@@ -178,16 +111,35 @@ class GameState:
             return self.board.result(claim_draw=True)
         return None
 
-    def snapshot(self) -> dict[str, object]:
-        return {
+    def snapshot(self) -> dict[str, Any]:
+        """Cheap, cached snapshot. No subprocess spawning."""
+        # Cache key combines transient flags and the position itself.
+        try:
+            position_key = self.board._transposition_key()
+        except Exception:
+            position_key = self.board.fen()
+
+        key = (position_key, self.robot_busy, self.last_error, self.game_id)
+        if self._snapshot_key == key and self._snapshot_cache is not None:
+            return self._snapshot_cache
+
+        board = self.board
+        is_over = board.is_game_over(claim_draw=True)
+        snapshot = {
             "game_id": self.game_id,
-            "fen": self.board.fen(),
-            "turn": "white" if self.board.turn == chess.WHITE else "black",
-            "legal_moves": self.legal_uci_moves(),
-            "is_check": self.board.is_check(),
-            "is_game_over": self.board.is_game_over(claim_draw=True),
-            "result": self.result_if_game_over(),
+            "fen": board.fen(),
+            "turn": "white" if board.turn == chess.WHITE else "black",
+            "legal_moves": [m.uci() for m in board.legal_moves],
+            "is_check": board.is_check(),
+            "is_game_over": is_over,
+            "result": board.result(claim_draw=True) if is_over else None,
             "robot_busy": self.robot_busy,
             "last_error": self.last_error,
-            "evaluation": evaluate_position(self.board),
+            "evaluation": evaluate_position(board),
+            "ply": board.ply(),
+            "halfmove_clock": board.halfmove_clock,
+            "fullmove_number": board.fullmove_number,
         }
+        self._snapshot_cache = snapshot
+        self._snapshot_key = key
+        return snapshot

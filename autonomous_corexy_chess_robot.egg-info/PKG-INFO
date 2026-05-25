@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
 Name: autonomous-corexy-chess-robot
-Version: 0.1.0
-Summary: Host software for an autonomous CoreXY chess robot
+Version: 0.2.0
+Summary: Host software for an autonomous CoreXY chess robot (GhostMate)
 Requires-Python: >=3.11
 Requires-Dist: fastapi>=0.110
 Requires-Dist: uvicorn[standard]>=0.27
@@ -14,8 +14,11 @@ Requires-Dist: pydantic-settings>=2.2
 Requires-Dist: jinja2>=3.1
 Requires-Dist: aiohttp>=3.9
 Requires-Dist: berserk>=0.13
+Requires-Dist: orjson>=3.10
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
 Requires-Dist: httpx>=0.27; extra == "dev"
 Requires-Dist: ruff>=0.4; extra == "dev"
+Provides-Extra: linux
+Requires-Dist: uvloop>=0.19; sys_platform != "win32" and extra == "linux"
