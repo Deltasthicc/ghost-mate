@@ -2,7 +2,7 @@
 
 The project uses a clear split between real-time firmware and high-level host software.
 
-## ESP32 firmware responsibilities
+## Teensy 4.0 firmware responsibilities
 
 - Generate step pulses for the two CoreXY motors.
 - Apply CoreXY inverse kinematics.
@@ -17,6 +17,6 @@ The project uses a clear split between real-time firmware and high-level host so
 - Maintain the authoritative chess state using python-chess.
 - Turn scan differences into legal chess moves.
 - Ask Stockfish for engine moves.
-- Send physical move commands to the ESP32.
+- Send physical move commands to the Teensy 4.0.
 - Store games/calibration in SQLite through SQLModel.
 - Serve a local FastAPI/Jinja/WebSocket UI.

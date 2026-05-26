@@ -14,10 +14,19 @@ import chess.pgn
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from host.app.ai.coach import LlmCoach, build_coach_context
 from host.app.domain.events import Event, EventType
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _cap_engine_depth(value: int | None, fallback: int = 15) -> int:
+    try:
+        depth = int(value if value is not None else fallback)
+    except (TypeError, ValueError):
+        depth = fallback
+    return max(1, min(15, depth))
 
 
 # ---------------------------------------------------------------- request bodies
@@ -41,22 +50,33 @@ class PgnRequest(BaseModel):
     pgn: str
 
 
+class CoachRequest(BaseModel):
+    question: str | None = None
+    style: str = "student"
+
+
 # ---------------------------------------------------------------- helpers
 
-def _final_board_from_pgn(pgn_text: str) -> chess.Board:
+def _parse_pgn(pgn_text: str) -> chess.pgn.Game:
     game = chess.pgn.read_game(StringIO(pgn_text.strip()))
     if game is None:
         raise ValueError("Could not parse PGN.")
-    board = game.board()
-    for move in game.mainline_moves():
-        board.push(move)
-    return board
+    return game
 
 
 async def _set_game_from_fen(request: Request, fen: str) -> dict:
     board = chess.Board(fen)
     game = request.app.state.game
     game.new_game(board.fen())
+    snapshot = game.snapshot()
+    await request.app.state.events.publish(Event(EventType.STATE_CHANGED, snapshot))
+    return snapshot
+
+
+async def _set_game_from_pgn(request: Request, pgn_text: str) -> dict:
+    parsed = _parse_pgn(pgn_text)
+    game = request.app.state.game
+    game.load_pgn_game(parsed)
     snapshot = game.snapshot()
     await request.app.state.events.publish(Event(EventType.STATE_CHANGED, snapshot))
     return snapshot
@@ -137,7 +157,14 @@ async def board_snapshot(request: Request) -> dict:
 
 # ---------------------------------------------------------------- engine
 
-async def _do_analysis(request: Request, multipv: int) -> dict:
+async def _do_analysis(
+    request: Request,
+    multipv: int,
+    *,
+    time_s: float | None = None,
+    depth: int | None = None,
+    use_cache: bool = True,
+) -> dict:
     settings = request.app.state.settings
     engine = request.app.state.stockfish
     board = request.app.state.game.board.copy(stack=False)
@@ -156,7 +183,13 @@ async def _do_analysis(request: Request, multipv: int) -> dict:
         )
 
     try:
-        return await engine.analysis(board, multipv=multipv)
+        return await engine.analysis(
+            board,
+            multipv=multipv,
+            time_s=time_s,
+            depth=depth,
+            use_cache=use_cache,
+        )
     except Exception as exc:
         logger.exception("Stockfish analysis failed")
         raise HTTPException(status_code=500, detail=f"Stockfish analysis failed: {exc}") from exc
@@ -168,8 +201,14 @@ async def engine_analysis(request: Request, multipv: int = 5) -> dict:
 
 
 @router.get("/engine/live")
-async def engine_live(request: Request, multipv: int = 5) -> dict:
-    return await _do_analysis(request, multipv)
+async def engine_live(request: Request, multipv: int = 5, max_depth: int | None = None) -> dict:
+    depth = _cap_engine_depth(max_depth, request.app.state.settings.capped_engine_live_max_depth)
+    return await _do_analysis(
+        request,
+        multipv,
+        depth=depth,
+        use_cache=False,
+    )
 
 
 @router.post("/engine/bestmove")
@@ -190,6 +229,26 @@ async def engine_bestmove(request: Request, time_s: float | None = None) -> dict
     return {"uci": move.uci, "san": move.san}
 
 
+@router.post("/ai/coach")
+async def ai_coach(request: Request, body: CoachRequest) -> dict:
+    settings = request.app.state.settings
+    board = request.app.state.game.board.copy(stack=False)
+    snapshot = request.app.state.game.snapshot()
+    analysis = await request.app.state.stockfish.analysis(
+        board,
+        multipv=settings.engine_live_multipv,
+        depth=min(settings.capped_engine_live_max_depth, 8),
+        use_cache=True,
+    )
+    context = build_coach_context(snapshot, analysis)
+    coach = LlmCoach(settings)
+    return await coach.explain(
+        context=context,
+        question=body.question,
+        style=body.style,
+    )
+
+
 # ---------------------------------------------------------------- position load
 
 @router.post("/position/fen")
@@ -203,7 +262,17 @@ async def load_fen(request: Request, body: FenRequest) -> dict:
 @router.post("/position/pgn")
 async def load_pgn(request: Request, body: PgnRequest) -> dict:
     try:
-        board = _final_board_from_pgn(body.pgn)
-        return await _set_game_from_fen(request, board.fen())
+        return await _set_game_from_pgn(request, body.pgn)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid PGN: {exc}") from exc
+
+
+@router.get("/state/pgn")
+async def state_pgn(request: Request) -> dict:
+    game = request.app.state.game
+    return {
+        "fen": game.board.fen(),
+        "start_fen": game.start_fen,
+        "pgn": game.pgn(),
+        "ply": game.board.ply(),
+    }

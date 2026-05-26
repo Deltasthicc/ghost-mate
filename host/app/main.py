@@ -1,6 +1,7 @@
 """FastAPI application factory and lifespan."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -52,6 +53,65 @@ async def handle_hardware_event(app: FastAPI, payload: dict) -> None:
         await app.state.events.publish(Event(EventType.STATE_CHANGED, {"hardware_event": payload}))
 
 
+async def publish_live_engine_updates(app: FastAPI) -> None:
+    """Continuously push fresh Stockfish evals to browsers that opted in.
+
+    The loop stays idle when no UI client asked for engine updates, which keeps
+    test runs and headless operation cheap while making the dashboard feel live.
+    """
+    settings = app.state.settings
+    interval_s = max(0.25, float(settings.engine_live_interval_s))
+    multipv = max(1, min(5, int(settings.engine_live_multipv)))
+    active_key = None
+    current_depth = 1
+    search_started_at = 0.0
+
+    while True:
+        try:
+            requested_depths = getattr(app.state, "engine_live_depths", {})
+            max_depth = settings.capped_engine_live_max_depth
+            if requested_depths:
+                max_depth = max(1, min(15, max(requested_depths.values())))
+
+            if (
+                not settings.engine_live_push_enabled
+                or getattr(app.state, "engine_live_clients", 0) <= 0
+            ):
+                await asyncio.sleep(0.25)
+                continue
+
+            board = app.state.game.board.copy(stack=False)
+            position_key = board._transposition_key()
+            if position_key != active_key or current_depth > max_depth:
+                active_key = position_key
+                current_depth = 1
+                search_started_at = asyncio.get_running_loop().time()
+
+            analysis = await app.state.stockfish.analysis(
+                board,
+                multipv=multipv,
+                depth=current_depth,
+                use_cache=False,
+            )
+            search_elapsed_ms = int((asyncio.get_running_loop().time() - search_started_at) * 1000)
+            analysis.update({
+                "depth_requested": current_depth,
+                "max_depth": max_depth,
+                "is_final_depth": current_depth >= max_depth,
+                "search_elapsed_ms": search_elapsed_ms,
+            })
+            await app.state.events.publish(Event(EventType.ENGINE_UPDATE, {"analysis": analysis}))
+
+            current_depth += 1
+            if current_depth > max_depth:
+                await asyncio.sleep(interval_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Live engine update skipped: %s", exc)
+            await asyncio.sleep(max(interval_s, 1.0))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(
@@ -64,6 +124,8 @@ async def lifespan(app: FastAPI):
     app.state.game = GameState()
     app.state.board_sensor = BoardSensorService()
     app.state.safety = SafetyMonitor()
+    app.state.engine_live_clients = 0
+    app.state.engine_live_depths = {}
     app.state.engine = make_engine(settings)
     init_db(app.state.engine)
 
@@ -75,11 +137,10 @@ async def lifespan(app: FastAPI):
         hash_mb=settings.engine_hash_mb,
         skill_level=settings.engine_skill_level,
     )
-    # Do not eagerly start Stockfish during app startup.
-    # It starts lazily on the first engine endpoint request.
-    # This keeps tests fast and prevents repeated TestClient lifespans from
-    # spawning/quitting Stockfish hundreds of times.
-    _engine_start = None
+    engine_updates = asyncio.create_task(
+        publish_live_engine_updates(app),
+        name="live-engine-updates",
+    )
 
     if settings.serial_mock:
         serial = MockJsonLineClient()
@@ -99,9 +160,9 @@ async def lifespan(app: FastAPI):
     finally:
         with _suppress_all():
             await serial.stop()
-        if _engine_start is not None:
-            with _suppress_all():
-                _engine_start.cancel()
+        with _suppress_all():
+            engine_updates.cancel()
+            await engine_updates
         with _suppress_all():
             await app.state.stockfish.stop()
 

@@ -1,7 +1,7 @@
 #include "protocol.hpp"
 
 bool parseCommand(const String& line, Command& out, String& err) {
-  StaticJsonDocument<384> doc;
+  JsonDocument doc;
   DeserializationError e = deserializeJson(doc, line);
   if (e) {
     err = "bad_json";
@@ -23,7 +23,7 @@ bool parseCommand(const String& line, Command& out, String& err) {
 }
 
 void writeAck(uint32_t id, bool ok, const char* err) {
-  StaticJsonDocument<160> doc;
+  JsonDocument doc;
   doc["id"] = id;
   doc["ok"] = ok;
   if (!ok && err) doc["err"] = err;
@@ -32,7 +32,7 @@ void writeAck(uint32_t id, bool ok, const char* err) {
 }
 
 void writeFault(const char* code, const char* square) {
-  StaticJsonDocument<160> doc;
+  JsonDocument doc;
   doc["type"] = "fault";
   doc["code"] = code;
   if (square) doc["square"] = square;
@@ -41,7 +41,7 @@ void writeFault(const char* code, const char* square) {
 }
 
 void writeMotionDone(uint32_t id) {
-  StaticJsonDocument<96> doc;
+  JsonDocument doc;
   doc["type"] = "motion_done";
   doc["id"] = id;
   serializeJson(doc, Serial);

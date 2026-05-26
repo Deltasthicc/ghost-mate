@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
-import os
-import os
 import sys
 from pathlib import Path
 
@@ -27,13 +24,13 @@ def run(name: str, command: list[str], cwd: Path | None = None) -> None:
 
 def main() -> None:
     # Readiness checks must be hardware-independent.
-    # Force mock serial so pytest/smoke tests do not talk to a real ESP32.
+    # Force mock serial so pytest/smoke tests do not talk to a real Teensy.
     os.environ["SERIAL_MOCK"] = "true"
     os.environ.setdefault("SERIAL_PORT", "MOCK")
     os.environ.setdefault("SERIAL_BAUD", "115200")
 
     parser = argparse.ArgumentParser(description="Run full software readiness checks.")
-    parser.add_argument("--firmware", action="store_true", help="Also compile ESP32 firmware with PlatformIO.")
+    parser.add_argument("--firmware", action="store_true", help="Also compile Teensy 4.0 firmware with PlatformIO.")
     args = parser.parse_args()
 
     run("Python compile check", [sys.executable, "-m", "compileall", "host", "scripts"])
@@ -41,11 +38,11 @@ def main() -> None:
     run("HTTP/API smoke check", [sys.executable, "scripts/smoke_check.py"])
 
     if args.firmware:
-        firmware_dir = ROOT / "firmware" / "esp32"
+        firmware_dir = ROOT / "firmware" / "teensy40"
         if not firmware_dir.exists():
-            raise SystemExit("❌ firmware/esp32 folder not found")
+            raise SystemExit("❌ firmware/teensy40 folder not found")
 
-        run("ESP32 firmware build", [sys.executable, "-m", "platformio", "run"], cwd=firmware_dir)
+        run("Teensy 4.0 firmware build", [sys.executable, "-m", "platformio", "run"], cwd=firmware_dir)
 
     print("\n✅ SOFTWARE READINESS CHECK PASSED")
     print("The host app, API, rules engine, mock serial layer, WebSocket path, UI assets,")

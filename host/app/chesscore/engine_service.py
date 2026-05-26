@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -227,6 +228,7 @@ class StockfishService:
         multipv: int = 5,
         time_s: float | None = None,
         depth: int | None = None,
+        use_cache: bool = True,
     ) -> dict[str, Any]:
         """Return White-POV analysis with up to ``multipv`` lines."""
         # Game-over short-circuit — never touches the engine.
@@ -241,20 +243,24 @@ class StockfishService:
         safe_multipv = max(1, min(int(multipv), 5, len(legal_moves)))
         cache_key = (board._transposition_key(), safe_multipv,
                      int((time_s or self.move_time_s) * 1000), depth)
-        cached = self._analysis_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if use_cache:
+            cached = self._analysis_cache.get(cache_key)
+            if cached is not None:
+                return {**cached, "cache_hit": True, "generated_at_ms": int(time.time() * 1000)}
 
         engine = await self._ensure_engine()
         if engine is None:
             return self._unavailable_payload(board)
 
-        limit = chess.engine.Limit(
-            time=time_s if time_s is not None else max(0.05, self.move_time_s),
-            depth=depth,
-        )
+        limit_kwargs: dict[str, Any] = {"depth": depth}
+        if time_s is not None:
+            limit_kwargs["time"] = max(0.01, float(time_s))
+        elif depth is None:
+            limit_kwargs["time"] = max(0.05, self.move_time_s)
+        limit = chess.engine.Limit(**limit_kwargs)
         board_copy = board.copy(stack=False)
 
+        started = time.perf_counter()
         async with self._lock:
             try:
                 infos = await asyncio.to_thread(
@@ -269,9 +275,16 @@ class StockfishService:
                 infos = await asyncio.to_thread(
                     engine2.analyse, board_copy, limit, multipv=safe_multipv
                 )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
 
         payload = self._build_payload(board_copy, infos)
-        self._analysis_cache.put(cache_key, payload)
+        payload["cache_hit"] = False
+        payload["analysis_time_s"] = time_s if time_s is not None else None
+        payload["depth_requested"] = depth
+        payload["elapsed_ms"] = elapsed_ms
+        payload["generated_at_ms"] = int(time.time() * 1000)
+        if use_cache:
+            self._analysis_cache.put(cache_key, payload)
         return payload
 
     async def evaluate(self, board: chess.Board, *, time_s: float = 0.12) -> dict[str, Any]:
@@ -287,7 +300,7 @@ class StockfishService:
                 "note": "Game is already checkmate.",
             }
         try:
-            payload = await self.analysis(board, multipv=1, time_s=time_s)
+            payload = await self.analysis(board, multipv=1, time_s=time_s, use_cache=False)
         except Exception as exc:
             logger.debug("evaluate failed, falling back to material: %s", exc)
             return _material_only_evaluation(board)

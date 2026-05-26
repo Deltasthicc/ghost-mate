@@ -35,6 +35,14 @@ router = APIRouter()
 _HEARTBEAT_INTERVAL_S = 15.0
 
 
+def _cap_engine_depth(raw: str | None, fallback: int = 15) -> int:
+    try:
+        depth = int(raw) if raw is not None else fallback
+    except (TypeError, ValueError):
+        depth = fallback
+    return max(1, min(15, depth))
+
+
 async def _maybe_await(value):
     if inspect.isawaitable(value):
         return await value
@@ -56,9 +64,15 @@ async def websocket_events(websocket: WebSocket) -> None:
     await websocket.accept()
     event_bus = websocket.app.state.events
     game = websocket.app.state.game
+    wants_engine = websocket.query_params.get("engine") == "1"
+    max_depth = _cap_engine_depth(websocket.query_params.get("max_depth"))
+    client_id = id(websocket)
     queue = None
 
     try:
+        if wants_engine:
+            websocket.app.state.engine_live_clients += 1
+            websocket.app.state.engine_live_depths[client_id] = max_depth
         queue = await _maybe_await(event_bus.subscribe())
 
         # Send initial state immediately. Snapshot is now O(1)-ish — no engine spawn.
@@ -90,5 +104,11 @@ async def websocket_events(websocket: WebSocket) -> None:
         if queue is not None:
             with suppress(Exception):
                 await _maybe_await(event_bus.unsubscribe(queue))
+        if wants_engine:
+            with suppress(Exception):
+                websocket.app.state.engine_live_clients = max(
+                    0, websocket.app.state.engine_live_clients - 1
+                )
+                websocket.app.state.engine_live_depths.pop(client_id, None)
         with suppress(Exception):
             await websocket.close(code=1000)

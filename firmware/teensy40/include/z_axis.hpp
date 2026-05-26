@@ -5,6 +5,7 @@ class ZAxis {
   void begin();
   void park();
   void engage();
+
  private:
   void writePulseUs(int pulse_us);
 };

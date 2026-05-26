@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     # env so debug=True doesn't print every SQL statement.
     sql_echo: bool = Field(default=False, validation_alias="SQL_ECHO")
 
-    # Serial / Teensy / ESP32 link
-    serial_port: str = "COM3"
-    serial_baud: int = 921600  # was 115200 — Teensy & ESP32 both handle 921600
+    # Serial / Teensy 4.0 link
+    serial_port: str = "/dev/serial/by-id/usb-Teensyduino_USB_Serial_6634680-if00"
+    serial_baud: int = 115200
     serial_mock: bool = True
     command_timeout_s: float = 5.0
 
@@ -39,9 +39,22 @@ class Settings(BaseSettings):
     stockfish_path: str = "stockfish"
     engine_move_time_s: float = 1.0
     engine_eval_time_s: float = 0.12  # fast eval used by WS pushes
+    engine_live_push_enabled: bool = True
+    engine_live_interval_s: float = 1.0
+    engine_live_multipv: int = 5
+    engine_live_max_depth: int = 15
     engine_threads: int | None = None  # None => CPU count - 1
     engine_hash_mb: int = 128
     engine_skill_level: int | None = None  # 0..20 to weaken Stockfish; None = full
+
+    # Optional OpenAI-compatible LLM coach. The LLM receives only chess state,
+    # Stockfish lines, and robot status; it never directly commands motion.
+    llm_coach_enabled: bool = False
+    llm_api_base: str = "https://api.openai.com/v1"
+    llm_api_key: str | None = Field(default=None, validation_alias="LLM_API_KEY")
+    llm_model: str = "gpt-4o-mini"
+    llm_timeout_s: float = 20.0
+    llm_max_tokens: int = 700
 
     database_url: str = Field(default="sqlite:///data/db/chess_robot.db")
 
@@ -51,6 +64,10 @@ class Settings(BaseSettings):
     # WebSocket / event bus tuning
     ws_max_queue: int = 256
     state_throttle_ms: int = 16  # max one push per ~60 fps
+
+    @property
+    def capped_engine_live_max_depth(self) -> int:
+        return max(1, min(15, int(self.engine_live_max_depth)))
 
     @property
     def sqlite_path(self) -> Path | None:

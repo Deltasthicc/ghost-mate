@@ -89,3 +89,7 @@ class EventBus:
     async def unsubscribe(self, queue: asyncio.Queue[Event]) -> None:
         async with self._lock:
             self._subscribers.discard(queue)
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._subscribers)

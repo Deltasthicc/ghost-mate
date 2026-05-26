@@ -1,118 +1,129 @@
 #include <Arduino.h>
 
-static String line;
-static const uint32_t BAUD = 115200;
+#include "config.hpp"
+#include "corexy.hpp"
+#include "hall_scan.hpp"
+#include "protocol.hpp"
+#include "safety.hpp"
+#include "z_axis.hpp"
 
-int getId(String s) {
-  s.replace(" ", "");
-  int p = s.indexOf("\"id\":");
-  if (p < 0) return -1;
-  p += 5;
-  return s.substring(p).toInt();
+CoreXYMotion motion;
+HallScanner scanner;
+Safety safety;
+ZAxis zaxis;
+
+static bool emOn = false;
+
+void setElectromagnet(bool on) {
+  emOn = on;
+  digitalWrite(cfg::PIN_EM, on ? HIGH : LOW);
+  scanner.setScanningEnabled(!on);
+  if (!on) delay(cfg::SETTLE_MS_AFTER_EM_OFF);
 }
 
-bool hasCmd(String s, const char* cmd) {
-  s.replace(" ", "");
-  String target = String("\"cmd\":\"") + cmd + "\"";
-  return s.indexOf(target) >= 0;
-}
+bool executeMove(const Command& c) {
+  if (!motion.isHomed()) return false;
 
-void ack(int id, bool ok, const char* err = nullptr) {
-  Serial.print("{\"id\":");
-  Serial.print(id);
-  Serial.print(",\"ok\":");
-  Serial.print(ok ? "true" : "false");
-  Serial.print(",\"err\":");
-  if (err) {
-    Serial.print("\"");
-    Serial.print(err);
-    Serial.println("\"}");
-  } else {
-    Serial.println("null}");
-  }
-}
+  // Safe sequence: scan before pickup, disable scan while EM is on, settle, scan after drop.
+  XY src = motion.squareCenter(c.from);
+  XY dst = motion.squareCenter(c.to);
+  if (!motion.moveTo(src.x, src.y)) return false;
 
-void motionDone(int id) {
-  Serial.print("{\"type\":\"motion_done\",\"id\":");
-  Serial.print(id);
-  Serial.println("}");
-}
+  zaxis.engage();
+  setElectromagnet(true);
+  delay(120);
+  zaxis.park();
 
-void scanEvent() {
-  Serial.print("{\"type\":\"scan\",\"ts_ms\":");
-  Serial.print(millis());
-  Serial.print(",\"cells\":{");
-
-  bool first = true;
-  for (char f = 'a'; f <= 'h'; f++) {
-    for (char r = '1'; r <= '8'; r++) {
-      if (!first) Serial.print(",");
-      first = false;
-      Serial.print("\"");
-      Serial.print(f);
-      Serial.print(r);
-      Serial.print("\":{\"o\":0,\"p\":0,\"m\":0}");
-    }
+  if (!motion.moveTo(dst.x, dst.y)) {
+    setElectromagnet(false);
+    zaxis.park();
+    return false;
   }
 
-  Serial.println("}}");
-}
-
-void handle(String s) {
-  s.trim();
-  if (!s.length()) return;
-
-  int id = getId(s);
-
-  if (hasCmd(s, "ping") || hasCmd(s, "version")) {
-    Serial.print("{\"id\":");
-    Serial.print(id);
-    Serial.println(",\"ok\":true,\"controller\":\"teensy40\",\"fw\":\"minimal\"}");
-    return;
-  }
-
-  if (hasCmd(s, "scan")) {
-    ack(id, true);
-    scanEvent();
-    return;
-  }
-
-  if (hasCmd(s, "home") || hasCmd(s, "park") || hasCmd(s, "move") || hasCmd(s, "capture_move")) {
-    ack(id, true);
-    motionDone(id);
-    return;
-  }
-
-  if (hasCmd(s, "set_em") || hasCmd(s, "set_electromagnet")) {
-    ack(id, true);
-    return;
-  }
-
-  ack(id, false, "unknown_command");
+  zaxis.engage();
+  setElectromagnet(false);
+  zaxis.park();
+  scanner.scanAndWriteJson(false);
+  return true;
 }
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
-  Serial.begin(BAUD);
+  pinMode(cfg::PIN_EM, OUTPUT);
+  digitalWrite(cfg::PIN_EM, LOW);
+
+  Serial.begin(cfg::SERIAL_BAUD);
   while (!Serial && millis() < 1500) delay(10);
-  Serial.println("{\"type\":\"boot\",\"controller\":\"teensy40\",\"fw\":\"minimal\",\"baud\":115200}");
+
+  safety.begin();
+  zaxis.begin();
+  motion.begin();
+  scanner.begin();
+
+  Serial.println("{\"type\":\"boot\",\"ok\":true,\"controller\":\"teensy40\",\"fw\":\"ghostmate-teensy40\",\"baud\":115200}");
 }
 
 void loop() {
-  while (Serial.available()) {
-    char c = Serial.read();
-    if (c == '\n') {
-      handle(line);
-      line = "";
-    } else if (c != '\r') {
-      line += c;
-      if (line.length() > 400) line = "";
-    }
+  static uint32_t lastBlink = 0;
+  if (millis() - lastBlink > 500) {
+    lastBlink = millis();
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
   }
 
-  static uint32_t last = 0;
-  if (millis() - last > 500) {
-    last = millis();
-    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+  if (safety.estopActive()) {
+    setElectromagnet(false);
+    writeFault("estop");
+    delay(500);
+    return;
+  }
+
+  if (!Serial.available()) {
+    delay(2);
+    return;
+  }
+
+  String line = Serial.readStringUntil('\n');
+  line.trim();
+  if (line.length() == 0) return;
+
+  Command c;
+  String err;
+  if (!parseCommand(line, c, err)) {
+    writeAck(0, false, err.c_str());
+    return;
+  }
+
+  if (c.cmd == "ping" || c.cmd == "version") {
+    writeAck(c.id, true);
+  } else if (c.cmd == "home") {
+    bool ok = motion.home();
+    writeAck(c.id, ok, ok ? nullptr : "home_failed");
+  } else if (c.cmd == "scan") {
+    writeAck(c.id, true);
+    scanner.scanAndWriteJson(c.full);
+  } else if (c.cmd == "move" || c.cmd == "move_square_to_square") {
+    writeAck(c.id, true);
+    bool ok = executeMove(c);
+    if (ok) writeMotionDone(c.id);
+    else writeFault("move_failed", c.from.c_str());
+  } else if (c.cmd == "capture_move") {
+    // First Teensy revision: host can send victim removal and attacker movement as separate steps.
+    writeAck(c.id, true);
+    bool ok = executeMove(c);
+    if (ok) writeMotionDone(c.id);
+    else writeFault("capture_move_failed", c.to.c_str());
+  } else if (c.cmd == "park") {
+    bool ok = motion.park();
+    zaxis.park();
+    setElectromagnet(false);
+    writeAck(c.id, ok, ok ? nullptr : "park_failed");
+  } else if (c.cmd == "set_em" || c.cmd == "set_electromagnet") {
+    setElectromagnet(c.on);
+    writeAck(c.id, true);
+  } else if (c.cmd == "calibrate") {
+    scanner.calibrateBaseline();
+    writeAck(c.id, true);
+  } else {
+    writeAck(c.id, false, "unknown_cmd");
   }
 }

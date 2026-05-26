@@ -3,7 +3,7 @@ JSON-line serial transport.
 
 Two implementations:
 - MockJsonLineClient: hardware-free, models the protocol and piece map.
-- JsonLineSerialClient: real ESP32/Teensy link via pyserial-asyncio.
+- JsonLineSerialClient: real Teensy 4.0 link via pyserial-asyncio.
 
 Optimizations vs the previous version:
 - orjson when available (faster encode + decode).
@@ -11,7 +11,8 @@ Optimizations vs the previous version:
 - Write coalescing: writes are not awaited on drain unless the buffer is full,
   which removes a per-command round-trip on TCP-like serial backends.
 - Read loop never silently sleeps on empty reads; readline blocks naturally.
-- Configurable baud (default 921600 — both ESP32 and Teensy 4 do this fine).
+- Configurable baud. The Teensy 4.0 default is 115200 for consistency with the
+  firmware monitor and stable bring-up.
 """
 from __future__ import annotations
 

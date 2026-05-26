@@ -24,6 +24,9 @@ class CoreXYMotion {
   MotorSteps inverseKinematics(float dx_mm, float dy_mm) const;
 
  private:
+  void enableMotors(bool enabled);
+  void stepBoth(long a_steps, long b_steps);
+
   bool homed_ = false;
   float x_mm_ = 0.0f;
   float y_mm_ = 0.0f;

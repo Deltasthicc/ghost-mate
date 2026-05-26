@@ -1,7 +1,7 @@
 # Ghost Mate — Autonomous CoreXY Chess Robot
 
-> Current project state: **Raspberry Pi 4 host + Nano ESP32 controller + Stockfish/python-chess software assistant working.**  
-> The site runs from the Raspberry Pi at `http://192.168.1.4:8000`, talks to the Nano ESP32 over USB serial, and now includes dynamic Stockfish analysis, White-centric evaluation, top-5 engine move suggestions, FEN loading, and PGN final-position loading.
+> Current project state: **Raspberry Pi 4 host + Teensy 4.0 controller + Stockfish/python-chess software assistant working.**  
+> The site runs from the Raspberry Pi at `http://192.168.1.4:8000`, talks to the Teensy 4.0 over USB serial, and includes dynamic Stockfish analysis, White-centric evaluation, top-5 engine move suggestions, FEN loading, and PGN final-position loading.
 
 ---
 
@@ -14,12 +14,12 @@ Windows laptop browser
         ↓ HTTP/WebSocket
 Raspberry Pi 4 host
         ↓ Python/FastAPI/python-chess/Stockfish
-Nano ESP32 controller
+Teensy 4.0 controller
         ↓ future CoreXY motors, Hall sensors, servo, electromagnet
 Physical chessboard robot
 ```
 
-The project is currently in the **software + controller integration phase**. The Raspberry Pi host app, chess logic, live dashboard, Stockfish engine analysis, serial connection to ESP32, and API routes are working. The physical motor/sensor/electromagnet layer has **not** been wired yet and should be brought up later in safe subsystem steps.
+The project is currently in the **software + controller integration phase**. The Raspberry Pi host app, chess logic, live dashboard, Stockfish engine analysis, serial connection to Teensy, and API routes are working. The physical motor/sensor/electromagnet layer has **not** been wired yet and should be brought up later in safe subsystem steps.
 
 ---
 
@@ -54,7 +54,8 @@ The project is currently in the **software + controller integration phase**. The
 - Stockfish analysis works through:
   - `GET /api/engine/analysis?multipv=5`
   - `GET /api/engine/live?multipv=5`
-- New dynamic Stockfish UI polls engine values every few seconds.
+- Dynamic Stockfish UI receives pushed `ENGINE_UPDATE` events over WebSocket
+  and can still use `/api/engine/live` as a fresh HTTP fallback.
 - Position evaluation is now intended to be **White-centric**:
   - `+` means White is better.
   - `-` means Black is better.
@@ -68,9 +69,9 @@ The project is currently in the **software + controller integration phase**. The
 - Software readiness check passes:
   - `562 passed`
   - `✅ SOFTWARE READINESS CHECK PASSED`
-- Nano ESP32 is detected by Raspberry Pi.
-- Raspberry Pi can communicate with Nano ESP32 over serial.
-- `/api/hardware/scan` works against the ESP32 and returns OK.
+- Teensy 4.0 is detected by Raspberry Pi.
+- Raspberry Pi can communicate with Teensy 4.0 over serial.
+- `/api/hardware/scan` works against the Teensy controller and returns OK.
 - `/api/board/snapshot` returns a 64-square payload.
 
 ### Expected behavior right now
@@ -96,28 +97,14 @@ Role:
 - Runs the web dashboard.
 - Runs Stockfish.
 - Maintains game state using `python-chess`.
-- Talks to Nano ESP32 over serial.
-
-### Arduino Nano ESP32
-
-Role:
-
-- Current real-time controller for Ghost Mate.
-- Connected to Raspberry Pi by USB.
-- Detected as:
-
-```text
-/dev/serial/by-id/usb-Arduino_NanoESP32_ECDA3B601698-if01
-```
-
-This is the path the app should use.
-
-Do **not** rely on `/dev/ttyACM0` long-term because device numbers can change when multiple boards are connected.
+- Talks to Teensy 4.0 over serial.
 
 ### Teensy 4.0
 
-Role right now:
+Role:
 
+- Active real-time controller for Ghost Mate.
+- Handles CoreXY step pulses, Hall scanning, Z servo, electromagnet, and safety inputs.
 - Connected to Raspberry Pi by USB.
 - Detected as:
 
@@ -125,11 +112,9 @@ Role right now:
 /dev/serial/by-id/usb-Teensyduino_USB_Serial_6634680-if00
 ```
 
-Current status:
+This is the path the app should use.
 
-- Not used by the Ghost Mate app right now.
-- Keep it as a future upgrade path or experimental motion controller.
-- Do **not** set the Ghost Mate `SERIAL_PORT` to the Teensy path unless intentionally porting the firmware.
+Do **not** rely on `/dev/ttyACM0` long-term because device numbers can change when multiple boards are connected.
 
 ### Stable serial paths
 
@@ -142,36 +127,47 @@ ls -l /dev/serial/by-id/
 Expected relevant entries:
 
 ```text
-usb-Arduino_NanoESP32_ECDA3B601698-if01 -> ../../ttyACM0
-usb-Teensyduino_USB_Serial_6634680-if00 -> ../../ttyACM1
+usb-Teensyduino_USB_Serial_6634680-if00 -> ../../ttyACM0
 ```
 
-Use the Nano ESP32 path in `.env`.
+Use the Teensy path in `.env`.
 
 ---
 
 ## 4. Important `.env` Configuration
 
-The current app should use the ESP32 stable by-id path:
+The current app should use the Teensy stable by-id path:
 
 ```env
 HOST=0.0.0.0
 PORT=8000
 
 SERIAL_MOCK=false
-SERIAL_PORT=/dev/serial/by-id/usb-Arduino_NanoESP32_ECDA3B601698-if01
+SERIAL_PORT=/dev/serial/by-id/usb-Teensyduino_USB_Serial_6634680-if00
 SERIAL_BAUD=115200
 
 STOCKFISH_PATH=/usr/games/stockfish
 ENGINE_MOVE_TIME_S=1.0
+ENGINE_EVAL_TIME_S=0.12
+ENGINE_LIVE_PUSH_ENABLED=true
+ENGINE_LIVE_INTERVAL_S=1.0
+ENGINE_LIVE_MULTIPV=5
+ENGINE_LIVE_MAX_DEPTH=15
+
+LLM_COACH_ENABLED=false
+LLM_API_BASE=https://api.openai.com/v1
+LLM_API_KEY=
+LLM_MODEL=gpt-4o-mini
+LLM_TIMEOUT_S=20.0
+LLM_MAX_TOKENS=700
 ```
 
 Notes:
 
 - `HOST=0.0.0.0` is required so the Windows laptop can open the dashboard through the Pi IP.
-- `SERIAL_MOCK=false` means the app talks to the real Nano ESP32.
+- `SERIAL_MOCK=false` means the app talks to the real Teensy 4.0.
 - For pure software checks, `scripts/software_ready_check.py` was patched to force mock mode internally so tests do not depend on real hardware.
-- Use `/dev/serial/by-id/...NanoESP32...`, not `/dev/ttyACM0`, because both ESP32 and Teensy are connected.
+- Use `/dev/serial/by-id/...Teensyduino...`, not `/dev/ttyACM0`, because device numbers can change.
 
 ---
 
@@ -326,8 +322,11 @@ curl.exe "http://192.168.1.4:8000/api/engine/analysis?multipv=5"
 ### New live Stockfish endpoint
 
 ```powershell
-curl.exe "http://192.168.1.4:8000/api/engine/live?multipv=5"
+curl.exe "http://192.168.1.4:8000/api/engine/live?multipv=5&max_depth=15"
 ```
+
+`max_depth` is capped at `15`. The live dashboard also has a max-depth input
+and uses depth-driven WebSocket updates rather than fixed-time polling.
 
 This is the preferred endpoint for the dynamic site UI.
 
@@ -451,29 +450,60 @@ Expected UI changes:
   - White POV explanation
   - Side to move
   - Mate display if available
-  - Search depth
-  - Last update time
-- It polls:
-
-```http
-GET /api/engine/live?multipv=5
-```
-
-every few seconds.
-
-Expected server log pattern while the site is open:
+  - Search depth against the selected max depth
+  - Time spent on the current depth and total search
+  - Live Stockfish updates
+- The primary live path is WebSocket:
 
 ```text
-GET /api/engine/live?multipv=5 HTTP/1.1" 200 OK
-GET /api/engine/live?multipv=5 HTTP/1.1" 200 OK
-GET /api/engine/live?multipv=5 HTTP/1.1" 200 OK
+/ws?engine=1
 ```
 
-That repeated polling is expected and proves the site is dynamically refreshing the engine value.
+The browser opts into engine updates, and the server pushes `ENGINE_UPDATE`
+events at depth 1, 2, 3, ... up to the selected depth cap. For this project,
+the hard cap is `15`.
+The fresh HTTP fallback remains:
+
+```http
+GET /api/engine/live?multipv=5&max_depth=15
+```
+
+Repeated HTTP polling is no longer required for normal dashboard use.
 
 ---
 
-## 12. White-Centric Evaluation Policy
+## 12. AI Coach / LLM Layer
+
+The LLM coach is for teaching, narration, explanations, training prompts, and
+natural-language interaction. It receives structured data: FEN, legal-move
+count, robot status, and Stockfish lines. It is **not** a chess engine and does
+not directly control motors.
+
+Endpoint:
+
+```http
+POST /api/ai/coach
+```
+
+Example body:
+
+```json
+{"question": "Why is Stockfish recommending this move?", "style": "student"}
+```
+
+If no LLM API key is configured, the endpoint returns a local rule-based coach
+response. To enable an OpenAI-compatible provider, set:
+
+```env
+LLM_COACH_ENABLED=true
+LLM_API_BASE=https://api.openai.com/v1
+LLM_API_KEY=...
+LLM_MODEL=gpt-4o-mini
+```
+
+---
+
+## 13. White-Centric Evaluation Policy
 
 This is a project rule now:
 
@@ -627,7 +657,7 @@ Right now no motors/drivers/electromagnet are wired, so they are not physically 
 
 ## 17. Why the Snapshot Is All Zeros
 
-Current board snapshot from ESP32:
+Current board snapshot from Teensy:
 
 ```json
 "a1": {"o": 0, "p": 0, "m": 0}
@@ -636,7 +666,7 @@ Current board snapshot from ESP32:
 Reason:
 
 - No Hall sensors are wired.
-- ESP32 cannot detect pieces yet.
+- Teensy cannot detect pieces yet.
 - Stockfish still works because it uses internal software game state.
 
 Future sensor integration will connect:
@@ -729,7 +759,7 @@ Fix `.env`:
 STOCKFISH_PATH=/usr/games/stockfish
 ```
 
-### Wrong serial device after connecting Teensy
+### Wrong serial device
 
 Check:
 
@@ -740,16 +770,16 @@ ls -l /dev/serial/by-id/
 Use:
 
 ```env
-SERIAL_PORT=/dev/serial/by-id/usb-Arduino_NanoESP32_ECDA3B601698-if01
+SERIAL_PORT=/dev/serial/by-id/usb-Teensyduino_USB_Serial_6634680-if00
 ```
 
 Do not use:
 
 ```env
-SERIAL_PORT=/dev/serial/by-id/usb-Teensyduino_USB_Serial_6634680-if00
+/dev/ttyACM0
 ```
 
-unless intentionally switching to Teensy.
+as a long-term config value.
 
 ### The UI does not update
 
@@ -810,7 +840,7 @@ Do not wire everything at once.
 Recommended sequence:
 
 1. One endstop switch only.
-2. Confirm ESP32 reads switch state.
+2. Confirm Teensy reads switch state.
 3. One TMC2209 driver + one NEMA 17 motor.
 4. Test tiny step movement only.
 5. Add second TMC2209 + second motor.
@@ -836,13 +866,12 @@ As of the latest verified state:
 ✅ Linux venv fixed
 ✅ 562 tests pass
 ✅ Dashboard opens at http://192.168.1.4:8000
-✅ Nano ESP32 detected and used by stable serial ID
-✅ Teensy detected but not used
+✅ Teensy 4.0 detected and used by stable serial ID
 ✅ Stockfish installed at /usr/games/stockfish
 ✅ python-chess works
 ✅ /api/engine/analysis works
 ✅ /api/engine/live works
-✅ Dynamic Stockfish polling works
+✅ Dynamic Stockfish updates work
 ✅ White-centric eval works
 ✅ FEN loader works
 ✅ PGN final-position loader works
@@ -859,12 +888,12 @@ As of the latest verified state:
 When continuing development, preserve these rules:
 
 1. Raspberry Pi is the host brain.
-2. Nano ESP32 is the active hardware controller.
-3. Teensy is only a future/experimental controller for now.
+2. Teensy 4.0 is the active hardware controller.
+3. Keep the host-to-controller JSON protocol stable.
 4. Stockfish eval must remain White-centric.
-5. Dynamic UI should poll `/api/engine/live?multipv=5`.
+5. Dynamic UI should subscribe to `/ws?engine=1` for pushed `ENGINE_UPDATE` events.
 6. Use PowerShell `Invoke-RestMethod` for JSON tests.
 7. Software readiness check should stay hardware-independent.
-8. Use `/dev/serial/by-id/...NanoESP32...`, not `/dev/ttyACM0`.
+8. Use `/dev/serial/by-id/...Teensyduino...`, not `/dev/ttyACM0`.
 9. Do not wire motors until endstop and driver tests are planned carefully.
 10. Do not trust all-zero board snapshots until Hall sensors are wired and calibrated.

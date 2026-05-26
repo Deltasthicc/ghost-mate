@@ -9,6 +9,7 @@ class HallScanner {
   void calibrateBaseline();
   void scanAndWriteJson(bool full);
   void setScanningEnabled(bool enabled) { scanning_enabled_ = enabled; }
+
  private:
   int readCellRaw(int muxIndex, int channel);
   void setMuxChannel(int channel);

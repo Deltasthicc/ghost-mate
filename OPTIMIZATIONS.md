@@ -1,8 +1,7 @@
 # GhostMate Optimization Pass
 
 All 562 existing tests pass. No public API or protocol changes — the host's
-HTTP routes, WebSocket payloads, and ESP32 JSON protocol all stay
-backwards-compatible.
+HTTP routes, WebSocket payloads, and Teensy JSON protocol stay compatible.
 
 ## Headline numbers
 
@@ -13,7 +12,7 @@ backwards-compatible.
 | WebSocket event → UI update | 2 HTTP round-trips | 0 (state embedded) |
 | Stockfish best-move | ~500 ms cold every call | persistent + LRU cached |
 | Hall scan, full board | ~60 ms blocking | ~5 ms in 64 cooperative ticks |
-| ESP32 main loop | blocked during moves | non-blocking FSM |
+| Teensy main loop | blocked during moves | future non-blocking FSM |
 | Browser board re-render | 64 × `createElement`/`addEventListener` | text/class diff only |
 | Test suite | 7.9 s | 5.3 s |
 
@@ -66,7 +65,7 @@ backwards-compatible.
 - orjson for line parse + encode.
 - Write coalescing (only `drain()` when buffer >4 KB).
 - Pending futures cancelled on stop; per-message timeout cleanup.
-- Default baud bumped to 921 600 (matches firmware).
+- Default baud is 115 200 for the Teensy 4.0 USB serial path.
 
 ### `host/app/hardware/board_sensor.py`
 - Precomputed 64-square name table, shared `_EMPTY_CELL` instance, `__slots__`.
@@ -74,7 +73,7 @@ backwards-compatible.
 ### `host/app/config.py`
 - New knobs: `sql_echo`, `engine_eval_time_s`, `engine_threads`,
   `engine_hash_mb`, `engine_skill_level`, `ws_max_queue`, `state_throttle_ms`.
-- Default `serial_baud` 115 200 → 921 600. Default `debug` flipped to False.
+- Default `serial_port` now targets the stable Teensy by-id path. Default `debug` is False.
 
 ## Browser (UI)
 
@@ -104,54 +103,44 @@ backwards-compatible.
 - `<link rel="preload">` for app.js and style.css.
 - `<script defer>` in `<head>` (was a blocking tag at end of body).
 
-## Firmware (ESP32)
+## Firmware (Teensy 4.0)
 
-### `firmware/esp32/platformio.ini`
-- `-O2 -ffast-math`, `monitor_speed = 921600`, `CONFIG_FREERTOS_HZ = 1000`,
-  `CORE_DEBUG_LEVEL = 0`.
+### `firmware/teensy40/platformio.ini`
+- Active PlatformIO target is `teensy40`.
+- `monitor_speed = 115200`.
+- ArduinoJson is the only external firmware dependency.
 
-### `firmware/esp32/include/config.hpp`
-- `SERIAL_BAUD = 921 600`.
-- `STEPPER_MAX_HZ` 12 k → 24 k; `STEPPER_ACCEL` 9 k → 20 k.
-- `SERVO_SETTLE_MS` 250 → 120.
-- `HALL_OVERSAMPLES` 12 → 4; `HALL_SAMPLE_DELAY_US` 80 → 6.
-- New: `HALL_MAG_DELTA_FOR_PUSH = 18`, `SCAN_PUSH_MIN_INTERVAL_MS = 30`.
+### `firmware/teensy40/include/config.hpp`
+- `SERIAL_BAUD = 115200`.
+- Teensy 4.0 pin map for CoreXY steppers, endstops, e-stop, Z servo,
+  electromagnet, and four CD74HC4067 Hall muxes.
+- Conservative blocking step pulse timing for first hardware bring-up.
 
-### `hall_scan.{hpp,cpp}` — cooperative scan
-- New `tick()` reads one square per call; full board cycles in 64 ticks.
-- Tracks polarity separately from magnitude (the old code lost the sign).
-- Rate-limited delta pushes only when something actually changed.
+### `hall_scan.{hpp,cpp}`
+- Tracks polarity separately from magnitude.
 - Full `scanAndWriteJson()` retained for explicit `scan` commands.
-- Upgraded to ArduinoJson v7 `JsonDocument`.
+- Uses Teensy 12-bit ADC reads through four mux signal pins.
 
-### `corexy.{hpp,cpp}` — non-blocking moves
-- New `startMoveTo()` / `isBusy()` / `notifyMoveCompleted()` for the FSM.
-- Old blocking `moveTo()` retained as a thin wrapper for homing/parking.
+### `corexy.{hpp,cpp}`
+- Teensy-compatible blocking CoreXY step pulse generation.
+- No board-specific stepper library dependency remains.
 
 ### `z_axis.{hpp,cpp}`
-- Non-blocking `startPark()` / `startEngage()` + `isSettled()` polling.
-- Blocking variants still available.
+- Uses the Teensy/Arduino `Servo` library for PWM.
 
-### `protocol.{hpp,cpp}` — ArduinoJson v7
-- Dynamic `JsonDocument` (no fixed `StaticJsonDocument<256>` caps).
-- New raw-buffer `parseCommand(const char*, size_t, …)` overload so `main.cpp`
-  doesn't allocate an `Arduino String` per line.
+### `protocol.{hpp,cpp}`
+- Preserves the host command/reply/event JSON format.
 
-### `main.cpp` — non-blocking control loop
-- Char-buffer line reader (no `readStringUntil`).
-- Motion FSM (`Phase` enum) for both regular and capture moves.
-- Serial drains every loop iteration, even mid-move.
-- Hall scan ticks every loop iteration unless the EM is on or a move is in
-  progress.
-- E-stop handler still services serial so the host can recover.
+### `main.cpp`
+- Boots as `controller=teensy40`.
+- Handles `home`, `scan`, `move`, `capture_move`, `park`, `set_em`, and
+  `calibrate` over the same newline-delimited JSON protocol.
 
 ## Scripts / config
 - `scripts/dev_host.sh` — uvloop + httptools + `--no-access-log`.
 - `scripts/run_host_pi.sh` — new production launcher for the Pi.
-- `.env.example` — documents every new tunable, default baud is 921 600.
+- `.env.example` — defaults to the stable Teensy by-id path and 115200 baud.
 
 ## Things explicitly **not** changed
-- `firmware/esp32/src/safety.cpp` — already minimal (three digital reads).
-- `firmware/esp32/src/endstops.cpp` — placeholder for future ISR-based limits.
 - HTTP route shapes — unchanged so existing clients keep working.
-- ESP32 protocol — unchanged so existing host code keeps working.
+- The controller JSON protocol — unchanged so the host transport remains simple.

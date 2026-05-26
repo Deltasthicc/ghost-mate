@@ -39,11 +39,13 @@
     engineError: null,
     engineReqId: 0,
     enginePosKey: null,
+    engineMaxDepth: 15,
     annotations: [],
     annotationDraft: null,
     rendering: false,
     boardBuilt: false,
     showRaw: false,
+    pgn: "",
   };
 
   // ----------------------------------------------------------------- helpers
@@ -287,6 +289,15 @@
     renderEvaluationUI();
     renderBoard();
     renderEnginePanel();
+    renderMoveHistory();
+    renderCopyFields();
+    queuePgnRefresh();
+  }
+
+  let pgnRefreshTimer = null;
+  function queuePgnRefresh(delay = 160) {
+    clearTimeout(pgnRefreshTimer);
+    pgnRefreshTimer = setTimeout(() => { refreshPgn().catch(() => {}); }, delay);
   }
 
   function renderEvaluationUI() {
@@ -329,31 +340,22 @@
       summary.textContent = "Stockfish analysis loading...";
       list.parentNode.insertBefore(summary, list);
     }
+    if (!el("engine-controls")) {
+      const controls = document.createElement("div");
+      controls.id = "engine-controls";
+      controls.className = "engine-controls";
+      controls.innerHTML = `
+        <label>
+          Max depth
+          <input id="engine-depth-limit" type="number" min="1" max="15" step="1" value="15" />
+        </label>
+        <small>Depth is capped at 15 for this project.</small>
+      `;
+      summary.parentNode.insertBefore(controls, summary.nextSibling);
+      el("engine-depth-limit")?.addEventListener("change", handleEngineDepthChange);
+    }
     list.classList.add("engine-move-list");
 
-    if (!el("position-loader")) {
-      const card = list.closest("article") || list.parentElement;
-      if (card && card.parentNode) {
-        const loader = document.createElement("article");
-        loader.className = "panel side-card";
-        loader.id = "position-loader";
-        loader.innerHTML = `
-          <p class="section-tag">position setup</p>
-          <h2>Load FEN / PGN</h2>
-          <textarea id="position-text" class="position-text"
-            placeholder="Paste a FEN, or paste a full PGN game here."></textarea>
-          <div class="button-row">
-            <button id="load-fen" class="btn btn-soft" type="button">Load FEN</button>
-            <button id="load-pgn" class="btn btn-primary" type="button">Load PGN Final Position</button>
-          </div>
-          <p class="hint">After loading, the board becomes playable from that position
-            and Stockfish refreshes automatically.</p>
-        `;
-        card.parentNode.insertBefore(loader, card.nextSibling);
-        el("load-fen")?.addEventListener("click", loadFenFromInput);
-        el("load-pgn")?.addEventListener("click", loadPgnFromInput);
-      }
-    }
   }
 
   function renderEnginePanel() {
@@ -373,11 +375,17 @@
       } else if (analysis) {
         const evalText = analysis.current_display || analysis.current_display_white || "\u2014";
         const mate = analysis.mate_display || "Mate: \u2014";
+        const depth = analysis.depth ?? analysis.depth_requested ?? "?";
+        const maxDepth = analysis.max_depth ?? state.engineMaxDepth;
+        const elapsed = formatMs(analysis.elapsed_ms);
+        const total = formatMs(analysis.search_elapsed_ms);
+        const mode = analysis.is_final_depth ? "target reached" : "analyzing";
         summary.innerHTML = `
           <strong>Position:</strong> ${evalText}
           <span class="muted">(White POV)</span> \u00B7
           <strong>${analysis.turn} to move \u00B7 ${mate}</strong> \u00B7
-          depth ${analysis.depth ?? "?"}
+          depth ${depth}/${maxDepth} \u00B7 ${elapsed} this depth \u00B7 ${total} total
+          <span class="engine-live-badge">${mode}</span>
         `;
       } else {
         summary.textContent = "No engine analysis yet.";
@@ -431,28 +439,179 @@
     state.engineError = null;
     renderEnginePanel();
     try {
-      const analysis = await api("/api/engine/live?multipv=5");
+      const analysis = await api(`/api/engine/live?multipv=5&max_depth=${state.engineMaxDepth}`);
       if (reqId !== state.engineReqId) return;
-      state.engine = analysis;
       state.engineLoading = false;
       state.engineError = null;
-      if (state.game) {
-        state.game.evaluation = {
-          display: analysis.current_display || analysis.current_display_white || "--",
-          score_cp: analysis.current_score_cp ?? analysis.current_score_cp_white ?? null,
-          score_pawns: analysis.current_score_cp == null ? null : analysis.current_score_cp / 100,
-          mate_in: analysis.mate_in,
-          source: "stockfish",
-        };
-      }
-      renderEvaluationUI();
-      renderEnginePanel();
+      applyEngineAnalysis(analysis);
     } catch (err) {
       if (reqId !== state.engineReqId) return;
       state.engineLoading = false;
       state.engineError = err.message || String(err);
       renderEnginePanel();
     }
+  }
+
+  function applyEngineAnalysis(analysis) {
+    if (!analysis) return;
+    state.engine = analysis;
+    state.engineError = null;
+    const scoreCp = analysis.current_score_cp ?? analysis.current_score_cp_white ?? null;
+    if (state.game) {
+      state.game.evaluation = {
+        display: analysis.current_display || analysis.current_display_white || "--",
+        score_cp: scoreCp,
+        score_pawns: scoreCp == null ? null : scoreCp / 100,
+        mate_in: analysis.mate_in,
+        source: analysis.cache_hit ? "stockfish cached" : "stockfish live",
+        note: analysis.note,
+      };
+    }
+    renderEvaluationUI();
+    renderEnginePanel();
+  }
+
+  // ----------------------------------------------------------------- history & copy
+
+  function renderMoveHistory() {
+    const box = el("move-history");
+    const counter = el("move-history-count");
+    if (!box) return;
+    const history = state.game?.move_history || [];
+    if (counter) counter.textContent = `${history.length} ${history.length === 1 ? "ply" : "plies"}`;
+
+    if (!history.length) {
+      box.innerHTML = `<p class="hint move-history-empty">No moves yet. Play a move on the board or load a PGN.</p>`;
+      return;
+    }
+
+    const rowsByMoveNumber = new Map();
+    for (const entry of history) {
+      const moveNumber = entry.move_number;
+      if (!rowsByMoveNumber.has(moveNumber)) {
+        rowsByMoveNumber.set(moveNumber, { white: null, black: null });
+      }
+      rowsByMoveNumber.get(moveNumber)[entry.color] = entry;
+    }
+
+    const lastPly = history[history.length - 1].ply;
+    const frag = document.createDocumentFragment();
+    const sortedNumbers = [...rowsByMoveNumber.keys()].sort((a, b) => a - b);
+    for (const moveNumber of sortedNumbers) {
+      const { white, black } = rowsByMoveNumber.get(moveNumber);
+      const row = document.createElement("div");
+      row.className = "move-history-row";
+      row.setAttribute("role", "listitem");
+      row.innerHTML = `
+        <span class="move-number">${moveNumber}.</span>
+        ${moveCellHtml(white, lastPly)}
+        ${moveCellHtml(black, lastPly)}
+      `;
+      frag.appendChild(row);
+    }
+    box.innerHTML = "";
+    box.appendChild(frag);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function moveCellHtml(entry, lastPly) {
+    if (!entry) {
+      return `<span class="move-cell empty">--</span>`;
+    }
+    const isLast = entry.ply === lastPly ? "last" : "";
+    return `
+      <button type="button" class="move-cell ${isLast}" data-fen="${entry.fen_after}"
+              title="Click to copy FEN after ${entry.san}">
+        <span class="san">${entry.san}</span>
+        <span class="uci">${entry.uci}</span>
+      </button>
+    `;
+  }
+
+  function renderCopyFields() {
+    const fenField = el("fen-copy-field");
+    if (fenField) fenField.value = state.game?.fen || "--";
+  }
+
+  async function refreshPgn(showFeedback = false) {
+    const field = el("pgn-copy-field");
+    if (!field) return;
+    try {
+      const data = await api("/api/state/pgn");
+      state.pgn = data.pgn || "";
+      field.value = state.pgn || "*";
+      if (showFeedback) showToast("PGN refreshed.");
+    } catch (err) {
+      field.value = `Failed to load PGN: ${err.message || err}`;
+    }
+  }
+
+  async function copyToClipboard(text, label) {
+    if (!text) { showToast(`Nothing to copy for ${label}.`); return; }
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const helper = document.createElement("textarea");
+        helper.value = text;
+        helper.setAttribute("readonly", "");
+        helper.style.position = "absolute";
+        helper.style.left = "-9999px";
+        document.body.appendChild(helper);
+        helper.select();
+        document.execCommand("copy");
+        document.body.removeChild(helper);
+      }
+      showToast(`${label} copied to clipboard.`);
+    } catch (err) {
+      showToast(`Copy failed: ${err.message || err}`);
+    }
+  }
+
+  async function copyFen() {
+    const text = el("fen-copy-field")?.value || state.game?.fen || "";
+    await copyToClipboard(text, "FEN");
+  }
+
+  async function copyPgn() {
+    if (!state.pgn) await refreshPgn();
+    const text = state.pgn || el("pgn-copy-field")?.value || "";
+    await copyToClipboard(text, "PGN");
+  }
+
+  function downloadPgn() {
+    const text = state.pgn || el("pgn-copy-field")?.value || "";
+    if (!text || text === "*") { showToast("Nothing to download yet."); return; }
+    const filename = (state.game?.game_id || "ghostmate-game") + ".pgn";
+    const blob = new Blob([text], { type: "application/x-chess-pgn" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  function formatMs(ms) {
+    if (ms === null || ms === undefined || Number.isNaN(Number(ms))) return "--";
+    const n = Number(ms);
+    if (n < 1000) return `${Math.max(0, Math.round(n))}ms`;
+    return `${(n / 1000).toFixed(2)}s`;
+  }
+
+  function handleEngineDepthChange(event) {
+    const raw = Number(event.target.value || 15);
+    const next = Math.max(1, Math.min(15, Math.round(raw)));
+    event.target.value = String(next);
+    state.engineMaxDepth = next;
+    state.engine = null;
+    state.engineLoading = false;
+    state.engineError = null;
+    reconnectWebSocket();
+    queueEngine(20);
+    renderEnginePanel();
   }
 
   let engineDebounceTimer = null;
@@ -605,11 +764,24 @@
 
   // ----------------------------------------------------------------- WebSocket
 
+  function reconnectWebSocket() {
+    if (state.ws) {
+      try {
+        state.ws.onclose = null;
+        state.ws.close(1000, "engine depth changed");
+      } catch {}
+    }
+    state.ws = null;
+    connectWebSocket();
+  }
+
   function connectWebSocket() {
     if (state.shuttingDown) return;
     const pill = el("connection-status");
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    state.ws = new WebSocket(`${protocol}://${location.host}/ws`);
+    state.ws = new WebSocket(
+      `${protocol}://${location.host}/ws?engine=1&max_depth=${state.engineMaxDepth}`
+    );
 
     state.ws.onopen = () => {
       state.wsBackoff = 250;
@@ -635,7 +807,7 @@
       catch (err) { addEvent("WS_PARSE_ERROR", { error: err.message }); return; }
 
       if (data.type === "PING") return;
-      addEvent(data.type || "WS_EVENT", data.payload || data);
+      if (data.type !== "ENGINE_UPDATE") addEvent(data.type || "WS_EVENT", data.payload || data);
 
       if (data.type === "HELLO" && data.state) {
         state.game = data.state;
@@ -668,6 +840,11 @@
           // If state wasn't embedded, fetch once. Normally it is embedded.
           if (!embedded) refreshStateOnce().catch(() => {});
           else queueEngine();
+          break;
+        }
+        case "ENGINE_UPDATE": {
+          state.engineLoading = false;
+          applyEngineAnalysis(data.payload?.analysis);
           break;
         }
       }
@@ -830,6 +1007,33 @@
     } catch (err) { showToast(err.message || String(err)); }
   }
 
+  async function askCoach() {
+    const question = (el("coach-question")?.value || "").trim();
+    const output = el("coach-answer");
+    const pill = el("coach-source-pill");
+    if (output) output.textContent = "Thinking with current board state and Stockfish lines...";
+    if (pill) pill.textContent = "thinking";
+    try {
+      const result = await api("/api/ai/coach", {
+        method: "POST",
+        body: JSON.stringify({ question, style: "student" }),
+      });
+      if (output) output.textContent = (result.answer || "").trim() || "No answer.";
+      if (pill) {
+        const label = result.source === "llm"
+          ? `llm: ${result.model || "model"}`
+          : result.source === "llm_error"
+            ? "llm error — local fallback"
+            : "local coach";
+        pill.textContent = label;
+      }
+    } catch (err) {
+      if (output) output.textContent = err.message || String(err);
+      if (pill) pill.textContent = "error";
+      showToast(err.message || String(err));
+    }
+  }
+
   // ----------------------------------------------------------------- bind
 
   function bindEvents() {
@@ -853,6 +1057,19 @@
     el("send-robot-move")?.addEventListener("click", sendRobotMove);
     el("uci")?.addEventListener("keydown", (e) => { if (e.key === "Enter") sendHumanMove(); });
     el("move-filter")?.addEventListener("input", renderEnginePanel);
+    el("load-fen")?.addEventListener("click", loadFenFromInput);
+    el("load-pgn")?.addEventListener("click", loadPgnFromInput);
+    el("ask-coach")?.addEventListener("click", askCoach);
+    el("copy-fen")?.addEventListener("click", copyFen);
+    el("copy-pgn")?.addEventListener("click", copyPgn);
+    el("refresh-pgn")?.addEventListener("click", () => refreshPgn(true));
+    el("download-pgn")?.addEventListener("click", downloadPgn);
+    el("move-history")?.addEventListener("click", (event) => {
+      const target = event.target.closest("button.move-cell");
+      if (!target) return;
+      const fen = target.dataset.fen;
+      if (fen) copyToClipboard(fen, "FEN at move");
+    });
     el("flip-board")?.addEventListener("click", () => { state.flipped = !state.flipped; scheduleRender(); });
     el("clear-selection")?.addEventListener("click", () => {
       state.selected = null; state.pendingMove = "";

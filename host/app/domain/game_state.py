@@ -14,6 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 import chess
+import chess.pgn
 
 
 PIECE_VALUES_CP: dict[chess.PieceType, int] = {
@@ -72,6 +73,7 @@ class GameState:
     game_id: str = field(default_factory=make_game_id)
     robot_busy: bool = False
     last_error: str | None = None
+    start_fen: str = field(default=chess.STARTING_FEN)
 
     # Cached snapshot — invalidated whenever the position changes.
     _snapshot_cache: dict[str, Any] | None = field(default=None, repr=False)
@@ -83,6 +85,20 @@ class GameState:
 
     def new_game(self, fen: str | None = None) -> None:
         self.board = chess.Board(fen) if fen else chess.Board()
+        self.start_fen = self.board.fen()
+        self.game_id = make_game_id()
+        self.robot_busy = False
+        self.last_error = None
+        self._invalidate()
+
+    def load_pgn_game(self, game: chess.pgn.Game) -> None:
+        """Set the position from a parsed PGN, keeping the full move stack."""
+        start_board = game.board()
+        self.start_fen = start_board.fen()
+        replay = chess.Board(self.start_fen)
+        for move in game.mainline_moves():
+            replay.push(move)
+        self.board = replay
         self.game_id = make_game_id()
         self.robot_busy = False
         self.last_error = None
@@ -110,6 +126,60 @@ class GameState:
         if self.board.is_game_over(claim_draw=True):
             return self.board.result(claim_draw=True)
         return None
+
+    def move_history(self) -> list[dict[str, Any]]:
+        """Return the full move history as a list of structured entries.
+
+        Each entry has ``ply``, ``move_number`` (1-based), ``color``, ``uci``,
+        ``san``, and ``fen_after``. We rebuild SAN from a replay board so the
+        notation is correct even after the position was loaded from a FEN.
+        """
+        history: list[dict[str, Any]] = []
+        try:
+            replay = chess.Board(self.start_fen)
+        except (ValueError, IndexError):
+            replay = chess.Board()
+        for index, move in enumerate(self.board.move_stack):
+            color = "white" if replay.turn == chess.WHITE else "black"
+            try:
+                san = replay.san(move)
+            except (AssertionError, ValueError):
+                san = move.uci()
+            replay.push(move)
+            history.append({
+                "ply": index + 1,
+                "move_number": (index // 2) + 1,
+                "color": color,
+                "uci": move.uci(),
+                "san": san,
+                "fen_after": replay.fen(),
+            })
+        return history
+
+    def pgn(self) -> str:
+        """Serialise the current line to PGN, honouring the starting position."""
+        game = chess.pgn.Game()
+        game.headers["Event"] = "GhostMate Session"
+        game.headers["Site"] = "GhostMate"
+        game.headers["Date"] = datetime.now(timezone.utc).strftime("%Y.%m.%d")
+        game.headers["White"] = "Player"
+        game.headers["Black"] = "Player"
+        if self.start_fen != chess.STARTING_FEN:
+            game.headers["SetUp"] = "1"
+            game.headers["FEN"] = self.start_fen
+        try:
+            replay = chess.Board(self.start_fen)
+        except (ValueError, IndexError):
+            replay = chess.Board()
+        node = game
+        for move in self.board.move_stack:
+            if move not in replay.legal_moves:
+                break
+            node = node.add_variation(move)
+            replay.push(move)
+        result = self.board.result(claim_draw=True) if self.board.is_game_over(claim_draw=True) else "*"
+        game.headers["Result"] = result
+        return str(game)
 
     def snapshot(self) -> dict[str, Any]:
         """Cheap, cached snapshot. No subprocess spawning."""
@@ -139,6 +209,8 @@ class GameState:
             "ply": board.ply(),
             "halfmove_clock": board.halfmove_clock,
             "fullmove_number": board.fullmove_number,
+            "start_fen": self.start_fen,
+            "move_history": self.move_history(),
         }
         self._snapshot_cache = snapshot
         self._snapshot_key = key

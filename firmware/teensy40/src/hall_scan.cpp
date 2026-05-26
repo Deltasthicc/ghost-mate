@@ -55,10 +55,10 @@ void HallScanner::calibrateBaseline() {
 void HallScanner::scanAndWriteJson(bool full) {
   if (!scanning_enabled_) return;
 
-  StaticJsonDocument<4096> doc;
+  JsonDocument doc;
   doc["type"] = "scan";
   doc["ts_ms"] = millis();
-  JsonObject cells = doc.createNestedObject("cells");
+  JsonObject cells = doc["cells"].to<JsonObject>();
 
   for (int mux = 0; mux < 4; mux++) {
     for (int ch = 0; ch < 16; ch++) {
@@ -71,7 +71,7 @@ void HallScanner::scanAndWriteJson(bool full) {
 
       bool changed = occ != lastOcc_[index] || abs(mag - lastMag_[index]) > 20;
       if (full || changed) {
-        JsonObject c = cells.createNestedObject(squareName(mux, ch));
+        JsonObject c = cells[squareName(mux, ch)].to<JsonObject>();
         c["o"] = occ ? 1 : 0;
         c["p"] = polarity;
         c["m"] = mag;

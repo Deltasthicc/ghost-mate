@@ -1,6 +1,6 @@
 # Serial Protocol
 
-Every host-to-ESP32 message is one JSON object followed by `\n`.
+Every host-to-Teensy message is one JSON object followed by `\n`.
 
 ## Host commands
 
@@ -13,14 +13,14 @@ Every host-to-ESP32 message is one JSON object followed by `\n`.
 {"id": 6, "cmd": "set_em", "on": true}
 ```
 
-## ESP32 replies
+## Teensy replies
 
 ```json
 {"id": 1, "ok": true}
 {"id": 3, "ok": false, "err": "not_homed"}
 ```
 
-## ESP32 async events
+## Teensy async events
 
 ```json
 {"type": "scan", "ts_ms": 482310, "cells": {"e2": {"o": 1, "p": 1, "m": 812}}}

@@ -165,6 +165,80 @@
       </aside>
     </section>
 
+    <section class="study-grid">
+      <article class="panel study-history">
+        <div class="section-head">
+          <div>
+            <p class="section-tag">notation</p>
+            <h2>Move History</h2>
+          </div>
+          <div class="button-row">
+            <span id="move-history-count" class="status-chip">0 plies</span>
+          </div>
+        </div>
+
+        <div id="move-history" class="move-history" role="list" aria-label="Move history">
+          <p class="hint move-history-empty">No moves yet. Play a move on the board or load a PGN.</p>
+        </div>
+      </article>
+
+      <article class="panel study-tools">
+        <div class="section-head">
+          <div>
+            <p class="section-tag">position tools</p>
+            <h2>Copy &amp; Share</h2>
+          </div>
+        </div>
+
+        <div class="tool-row">
+          <label for="fen-copy-field">FEN</label>
+          <div class="copy-field">
+            <input id="fen-copy-field" class="copy-input" readonly value="--" />
+            <button id="copy-fen" class="btn btn-soft" type="button">Copy FEN</button>
+          </div>
+        </div>
+
+        <div class="tool-row">
+          <label for="pgn-copy-field">PGN</label>
+          <textarea id="pgn-copy-field" class="copy-input copy-textarea" readonly>--</textarea>
+          <div class="button-row">
+            <button id="refresh-pgn" class="btn btn-mini" type="button">Refresh PGN</button>
+            <button id="copy-pgn" class="btn btn-primary" type="button">Copy PGN</button>
+            <button id="download-pgn" class="btn btn-soft" type="button">Download .pgn</button>
+          </div>
+        </div>
+
+        <article class="panel inset position-loader-card" id="position-loader">
+          <p class="section-tag">position setup</p>
+          <h2>Load FEN / PGN</h2>
+          <textarea id="position-text" class="position-text"
+            placeholder="Paste a FEN, or paste a full PGN game here."></textarea>
+          <div class="button-row">
+            <button id="load-fen" class="btn btn-soft" type="button">Load FEN</button>
+            <button id="load-pgn" class="btn btn-primary" type="button">Load PGN</button>
+          </div>
+          <p class="hint">After loading, the board becomes playable from that position and Stockfish refreshes automatically.</p>
+        </article>
+      </article>
+
+      <article class="panel study-coach" id="ai-coach-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-tag">ai coach</p>
+            <h2>Ask About This Position</h2>
+          </div>
+          <span id="coach-source-pill" class="status-chip">local</span>
+        </div>
+
+        <textarea id="coach-question" class="position-text"
+          placeholder="Ask why the top move works, what plan to follow, or how to explain this to a student."></textarea>
+        <div class="button-row">
+          <button id="ask-coach" class="btn btn-primary" type="button">Ask Coach</button>
+        </div>
+        <pre id="coach-answer" class="coach-answer">Coach output will appear here.</pre>
+      </article>
+    </section>
+
     <section class="ops-grid">
       <article class="panel ops-panel">
         <div class="section-head">

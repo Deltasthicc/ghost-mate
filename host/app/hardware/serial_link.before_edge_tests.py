@@ -30,7 +30,7 @@ class BaseJsonLineClient:
 
 
 class MockJsonLineClient(BaseJsonLineClient):
-    """Hardware-free mock. Good for UI/backend development before ESP32 is connected."""
+    """Hardware-free mock. Good for UI/backend development before Teensy is connected."""
 
     def __init__(self) -> None:
         self._next_id = 1
