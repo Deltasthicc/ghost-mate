@@ -165,6 +165,42 @@ class StockfishService:
             if engine is not None:
                 await asyncio.to_thread(engine.quit)
 
+    async def configure_options(
+        self,
+        *,
+        threads: int | None = None,
+        hash_mb: int | None = None,
+        skill_level: int | None = None,
+    ) -> None:
+        """Update runtime Stockfish options and apply them to a running engine.
+
+        The values are clamped defensively because the dashboard exposes these
+        controls directly. If Stockfish is not running yet, the new values are
+        stored and used on the next lazy start.
+        """
+        if threads is not None:
+            self.threads = max(1, min(64, int(threads)))
+        if hash_mb is not None:
+            self.hash_mb = max(16, min(4096, int(hash_mb)))
+        if skill_level is not None:
+            self.skill_level = max(0, min(20, int(skill_level)))
+
+        engine = self._engine
+        if engine is None:
+            return
+
+        options: dict[str, Any] = {
+            "Threads": self.threads,
+            "Hash": self.hash_mb,
+        }
+        if self.skill_level is not None:
+            options["Skill Level"] = self.skill_level
+        async with self._lock:
+            try:
+                await asyncio.to_thread(engine.configure, options)
+            except chess.engine.EngineError as exc:
+                logger.debug("Stockfish runtime configure partial: %s", exc)
+
     def _spawn(self) -> chess.engine.SimpleEngine:
         engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
         options: dict[str, Any] = {

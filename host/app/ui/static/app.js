@@ -39,7 +39,13 @@
     engineError: null,
     engineReqId: 0,
     enginePosKey: null,
-    engineMaxDepth: 15,
+    engineMaxDepth: 24,
+    engineDepthCap: 30,
+    engineSearchTimeS: 2.0,
+    engineLines: 5,
+    engineThreads: null,
+    engineHashMb: 128,
+    engineSettingsReqId: 0,
     annotations: [],
     annotationDraft: null,
     rendering: false,
@@ -347,13 +353,33 @@
       controls.innerHTML = `
         <label>
           Max depth
-          <input id="engine-depth-limit" type="number" min="1" max="15" step="1" value="15" />
+          <input id="engine-depth-limit" type="number" min="1" max="30" step="1" value="24" />
         </label>
-        <small>Depth is capped at 15 for this project.</small>
+        <label>
+          Search time
+          <input id="engine-search-time" type="number" min="0.1" max="30" step="0.1" value="2.0" />
+        </label>
+        <label>
+          Lines
+          <input id="engine-lines" type="number" min="1" max="5" step="1" value="5" />
+        </label>
+        <label>
+          Threads
+          <input id="engine-threads" type="number" min="1" max="64" step="1" value="1" />
+        </label>
+        <label>
+          Memory MB
+          <input id="engine-memory" type="number" min="16" max="4096" step="16" value="128" />
+        </label>
+        <small class="engine-settings-note">
+          <span>Depth cap: <strong id="engine-depth-cap-label">30</strong></span>
+          <span>Search time is a per-depth safety budget.</span>
+        </small>
       `;
       summary.parentNode.insertBefore(controls, summary.nextSibling);
-      el("engine-depth-limit")?.addEventListener("change", handleEngineDepthChange);
+      bindEngineSettingControls();
     }
+    syncEngineControlValues();
     list.classList.add("engine-move-list");
 
   }
@@ -380,12 +406,23 @@
         const elapsed = formatMs(analysis.elapsed_ms);
         const total = formatMs(analysis.search_elapsed_ms);
         const mode = analysis.is_final_depth ? "target reached" : "analyzing";
+        const searchTime = analysis.search_time_s ?? state.engineSearchTimeS;
+        const lines = analysis.multipv_requested ?? state.engineLines;
+        const threads = analysis.threads ?? state.engineThreads ?? "auto";
+        const memory = analysis.hash_mb ?? state.engineHashMb ?? "--";
         summary.innerHTML = `
           <strong>Position:</strong> ${evalText}
           <span class="muted">(White POV)</span> \u00B7
           <strong>${analysis.turn} to move \u00B7 ${mate}</strong> \u00B7
-          depth ${depth}/${maxDepth} \u00B7 ${elapsed} this depth \u00B7 ${total} total
           <span class="engine-live-badge">${mode}</span>
+          <div class="engine-stat-grid">
+            <span><small>Depth</small><strong>${depth}/${maxDepth}</strong></span>
+            <span><small>This depth</small><strong>${elapsed}</strong></span>
+            <span><small>Total thinking</small><strong>${total}</strong></span>
+            <span><small>Search time</small><strong>${Number(searchTime).toFixed(1)}s</strong></span>
+            <span><small>Lines</small><strong>${lines}/5</strong></span>
+            <span><small>Threads / memory</small><strong>${threads} · ${memory}MB</strong></span>
+          </div>
         `;
       } else {
         summary.textContent = "No engine analysis yet.";
@@ -439,7 +476,12 @@
     state.engineError = null;
     renderEnginePanel();
     try {
-      const analysis = await api(`/api/engine/live?multipv=5&max_depth=${state.engineMaxDepth}`);
+      const params = new URLSearchParams({
+        multipv: String(state.engineLines),
+        max_depth: String(state.engineMaxDepth),
+        time_s: String(state.engineSearchTimeS),
+      });
+      const analysis = await api(`/api/engine/live?${params.toString()}`);
       if (reqId !== state.engineReqId) return;
       state.engineLoading = false;
       state.engineError = null;
@@ -456,6 +498,11 @@
     if (!analysis) return;
     state.engine = analysis;
     state.engineError = null;
+    if (analysis.max_depth) state.engineMaxDepth = analysis.max_depth;
+    if (analysis.search_time_s) state.engineSearchTimeS = analysis.search_time_s;
+    if (analysis.multipv_requested) state.engineLines = analysis.multipv_requested;
+    if (analysis.threads) state.engineThreads = analysis.threads;
+    if (analysis.hash_mb) state.engineHashMb = analysis.hash_mb;
     const scoreCp = analysis.current_score_cp ?? analysis.current_score_cp_white ?? null;
     if (state.game) {
       state.game.evaluation = {
@@ -601,17 +648,106 @@
     return `${(n / 1000).toFixed(2)}s`;
   }
 
-  function handleEngineDepthChange(event) {
-    const raw = Number(event.target.value || 15);
-    const next = Math.max(1, Math.min(15, Math.round(raw)));
-    event.target.value = String(next);
-    state.engineMaxDepth = next;
-    state.engine = null;
-    state.engineLoading = false;
-    state.engineError = null;
-    reconnectWebSocket();
-    queueEngine(20);
-    renderEnginePanel();
+  function bindEngineSettingControls() {
+    ["engine-depth-limit", "engine-search-time", "engine-lines", "engine-threads", "engine-memory"]
+      .forEach((id) => {
+        const input = el(id);
+        input?.addEventListener("change", queueEngineSettingsSave);
+        input?.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") queueEngineSettingsSave();
+        });
+      });
+  }
+
+  function syncEngineControlValues() {
+    const depth = el("engine-depth-limit");
+    const search = el("engine-search-time");
+    const lines = el("engine-lines");
+    const threads = el("engine-threads");
+    const memory = el("engine-memory");
+    const cap = el("engine-depth-cap-label");
+    if (depth) { depth.max = String(state.engineDepthCap); depth.value = String(state.engineMaxDepth); }
+    if (search) search.value = String(state.engineSearchTimeS);
+    if (lines) lines.value = String(state.engineLines);
+    if (threads && state.engineThreads != null) threads.value = String(state.engineThreads);
+    if (memory && state.engineHashMb != null) memory.value = String(state.engineHashMb);
+    if (cap) cap.textContent = String(state.engineDepthCap);
+  }
+
+  function readEngineControlValues() {
+    const maxDepth = Math.max(1, Math.min(
+      state.engineDepthCap,
+      Math.round(Number(el("engine-depth-limit")?.value || state.engineMaxDepth))
+    ));
+    const searchTimeS = Math.max(0.1, Math.min(
+      30,
+      Number(el("engine-search-time")?.value || state.engineSearchTimeS)
+    ));
+    const lines = Math.max(1, Math.min(5, Math.round(Number(el("engine-lines")?.value || state.engineLines))));
+    const threads = Math.max(1, Math.min(64, Math.round(Number(el("engine-threads")?.value || state.engineThreads || 1))));
+    const hashMb = Math.max(16, Math.min(4096, Math.round(Number(el("engine-memory")?.value || state.engineHashMb || 128))));
+    return {
+      max_depth: maxDepth,
+      search_time_s: Number(searchTimeS.toFixed(1)),
+      multipv: lines,
+      threads,
+      hash_mb: hashMb,
+    };
+  }
+
+  function applyEngineSettings(settings) {
+    if (!settings) return;
+    state.engineDepthCap = settings.max_depth_cap ?? state.engineDepthCap;
+    state.engineMaxDepth = settings.max_depth ?? state.engineMaxDepth;
+    state.engineSearchTimeS = settings.search_time_s ?? state.engineSearchTimeS;
+    state.engineLines = settings.multipv ?? state.engineLines;
+    state.engineThreads = settings.threads ?? state.engineThreads;
+    state.engineHashMb = settings.hash_mb ?? state.engineHashMb;
+    syncEngineControlValues();
+  }
+
+  let engineSettingsTimer = null;
+  function queueEngineSettingsSave() {
+    clearTimeout(engineSettingsTimer);
+    engineSettingsTimer = setTimeout(saveEngineSettings, 180);
+  }
+
+  async function loadEngineSettings() {
+    try {
+      applyEngineSettings(await api("/api/engine/settings"));
+    } catch (err) {
+      addEvent("ENGINE_SETTINGS_FAILED", { error: err.message || String(err) });
+    }
+  }
+
+  async function saveEngineSettings() {
+    const next = readEngineControlValues();
+    const reqId = ++state.engineSettingsReqId;
+    applyEngineSettings({
+      max_depth: next.max_depth,
+      search_time_s: next.search_time_s,
+      multipv: next.multipv,
+      threads: next.threads,
+      hash_mb: next.hash_mb,
+      max_depth_cap: state.engineDepthCap,
+    });
+    try {
+      const saved = await api("/api/engine/settings", {
+        method: "POST",
+        body: JSON.stringify(next),
+      });
+      if (reqId !== state.engineSettingsReqId) return;
+      applyEngineSettings(saved);
+      state.engine = null;
+      state.engineLoading = false;
+      state.engineError = null;
+      reconnectWebSocket();
+      queueEngine(20);
+      renderEnginePanel();
+      showToast("Engine settings updated.");
+    } catch (err) {
+      showToast(err.message || String(err));
+    }
   }
 
   let engineDebounceTimer = null;
@@ -1009,6 +1145,7 @@
 
   async function askCoach() {
     const question = (el("coach-question")?.value || "").trim();
+    const style = (el("coach-style")?.value || "student").trim();
     const output = el("coach-answer");
     const pill = el("coach-source-pill");
     if (output) output.textContent = "Thinking with current board state and Stockfish lines...";
@@ -1016,7 +1153,7 @@
     try {
       const result = await api("/api/ai/coach", {
         method: "POST",
-        body: JSON.stringify({ question, style: "student" }),
+        body: JSON.stringify({ question, style }),
       });
       if (output) output.textContent = (result.answer || "").trim() || "No answer.";
       if (pill) {
@@ -1121,6 +1258,7 @@
       clockTimer = setInterval(tickClock, 1000);
       await api("/api/health");
       setText("host-status", "Online");
+      await loadEngineSettings();
       await refreshStateOnce();
       await refreshSnapshot();
       connectWebSocket();

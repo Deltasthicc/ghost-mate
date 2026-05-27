@@ -28,13 +28,14 @@ class TestSettings:
         s = Settings(_env_file=None)
         assert s.serial_baud == 115200
         assert s.serial_mock is True
-        assert s.engine_live_max_depth == 15
+        assert s.engine_live_max_depth == 24
+        assert s.engine_live_search_time_s == 2.0
         assert s.llm_coach_enabled is False
         assert 1 <= s.engine_live_multipv <= 5
 
     @pytest.mark.parametrize("raw,expected", [
         (-99, 1), (-1, 1), (0, 1), (1, 1),
-        (7, 7), (14, 14), (15, 15), (16, 15), (1000, 15),
+        (7, 7), (14, 14), (24, 24), (30, 30), (31, 30), (1000, 30),
     ])
     def test_capped_engine_live_max_depth(self, raw, expected):
         s = Settings(_env_file=None)
@@ -137,5 +138,6 @@ class TestPublicExports:
         assert "/state/pgn" in names
         assert "/ai/coach" in names
         assert "/engine/live" in names
+        assert "/engine/settings" in names
         assert "/position/pgn" in names
         assert "/position/fen" in names

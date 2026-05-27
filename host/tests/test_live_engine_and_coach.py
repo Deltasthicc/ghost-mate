@@ -19,17 +19,20 @@ class _Settings:
     engine_live_interval_s = 0.01
     engine_live_multipv = 1
     engine_live_max_depth = 3
+    engine_live_search_time_s = 0.1
 
     @property
     def capped_engine_live_max_depth(self) -> int:
-        return min(15, max(1, self.engine_live_max_depth))
+        return min(30, max(1, self.engine_live_max_depth))
 
 
 class _FakeStockfish:
     def __init__(self) -> None:
         self.depths: list[int] = []
+        self.threads = 1
+        self.hash_mb = 128
 
-    async def analysis(self, board, *, multipv, depth, use_cache):
+    async def analysis(self, board, *, multipv, depth, use_cache, time_s=None):
         self.depths.append(depth)
         return {
             "fen": board.fen(),
@@ -52,10 +55,10 @@ class _FakeStockfish:
 def test_engine_depth_clamps_negative_invalid_and_over_cap():
     assert _cap_engine_depth(-5) == 1
     assert _cap_engine_depth(None, fallback=7) == 7
-    assert _cap_engine_depth(99) == 15
+    assert _cap_engine_depth(99) == 30
     assert _cap_ws_depth("bad") == 15
     assert _cap_ws_depth("0") == 1
-    assert _cap_ws_depth("20") == 15
+    assert _cap_ws_depth("20") == 20
 
 
 @pytest.mark.asyncio
@@ -95,6 +98,8 @@ async def test_live_engine_publisher_walks_depths_and_marks_final():
 def test_engine_live_endpoint_uses_capped_depth(monkeypatch):
     class FakeRouteStockfish:
         is_available = True
+        threads = 1
+        hash_mb = 128
 
         async def start(self):
             return None
@@ -114,7 +119,7 @@ def test_engine_live_endpoint_uses_capped_depth(monkeypatch):
         response = client.get("/api/engine/live?multipv=2&max_depth=99")
 
     assert response.status_code == 200
-    assert response.json()["depth_requested"] == 15
+    assert response.json()["depth_requested"] == 30
 
 
 def test_coach_context_and_fallback_teach_without_boilerplate():

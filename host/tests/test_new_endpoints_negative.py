@@ -31,12 +31,20 @@ class _AnalysisStub:
     def __init__(self, raise_on_call: Exception | None = None):
         self.calls: list[dict] = []
         self.raise_on_call = raise_on_call
+        self.threads = 3
+        self.hash_mb = 128
 
     async def start(self):
         return None
 
     async def stop(self):
         return None
+
+    async def configure_options(self, *, threads=None, hash_mb=None, skill_level=None):
+        if threads is not None:
+            self.threads = threads
+        if hash_mb is not None:
+            self.hash_mb = hash_mb
 
     async def analysis(self, board, *, multipv=5, time_s=None, depth=None,
                        use_cache=True):
@@ -148,14 +156,14 @@ class TestAiCoachEndpoint:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestEngineLiveEndpoint:
-    def test_default_depth_is_15(self, fresh_client, stub_engine):
+    def test_default_depth_uses_configured_depth(self, fresh_client, stub_engine):
         response = fresh_client.get("/api/engine/live")
         assert response.status_code == 200
-        assert stub_engine.calls[-1]["depth"] == 15
+        assert stub_engine.calls[-1]["depth"] == 24
 
     def test_max_depth_query_is_clamped(self, fresh_client, stub_engine):
         fresh_client.get("/api/engine/live?max_depth=99")
-        assert stub_engine.calls[-1]["depth"] == 15
+        assert stub_engine.calls[-1]["depth"] == 30
         fresh_client.get("/api/engine/live?max_depth=-5")
         assert stub_engine.calls[-1]["depth"] == 1
         fresh_client.get("/api/engine/live?max_depth=0")
@@ -187,6 +195,50 @@ class TestEngineLiveEndpoint:
         response = fresh_client.get("/api/engine/live")
         assert response.status_code == 503
         assert "Stockfish" in response.text
+
+    def test_engine_settings_get_shape(self, fresh_client, stub_engine):
+        response = fresh_client.get("/api/engine/settings")
+        assert response.status_code == 200
+        payload = response.json()
+        for key in (
+            "max_depth", "max_depth_cap", "search_time_s", "multipv",
+            "multipv_cap", "threads", "hash_mb",
+        ):
+            assert key in payload
+        assert payload["max_depth_cap"] == 30
+        assert payload["multipv_cap"] == 5
+
+    def test_engine_settings_post_clamps_values(self, fresh_client, stub_engine):
+        response = fresh_client.post("/api/engine/settings", json={
+            "max_depth": 999,
+            "search_time_s": 999,
+            "multipv": 999,
+            "threads": 999,
+            "hash_mb": 99999,
+        })
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["max_depth"] == 30
+        assert payload["search_time_s"] == 30.0
+        assert payload["multipv"] == 5
+        assert payload["threads"] == 64
+        assert payload["hash_mb"] == 4096
+
+    def test_engine_settings_post_low_values_clamp_up(self, fresh_client, stub_engine):
+        response = fresh_client.post("/api/engine/settings", json={
+            "max_depth": -5,
+            "search_time_s": -1,
+            "multipv": 0,
+            "threads": 0,
+            "hash_mb": 0,
+        })
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["max_depth"] == 1
+        assert payload["search_time_s"] == 0.1
+        assert payload["multipv"] == 1
+        assert payload["threads"] == 1
+        assert payload["hash_mb"] == 16
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,7 +325,7 @@ class TestWebSocketBehaviour:
         with fresh_client.websocket_connect(f"/ws?engine=1&max_depth={raw}") as ws:
             ws.receive_json()
             depth = list(fresh_client.app.state.engine_live_depths.values())[0]
-            assert 1 <= depth <= 15
+            assert 1 <= depth <= 30
 
     def test_no_engine_param_does_not_register_as_client(self, fresh_client):
         with fresh_client.websocket_connect("/ws") as ws:

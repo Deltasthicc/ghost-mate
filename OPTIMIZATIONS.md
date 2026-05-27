@@ -1,7 +1,8 @@
 # GhostMate Optimization Pass
 
-All 562 existing tests pass. No public API or protocol changes — the host's
-HTTP routes, WebSocket payloads, and Teensy JSON protocol stay compatible.
+All 859 automated tests pass. The host's core HTTP routes, WebSocket payloads,
+and Teensy JSON protocol stay compatible; the current app also adds live engine
+settings, move history, PGN export, and the board-support coach/history layout.
 
 ## Headline numbers
 
@@ -33,11 +34,13 @@ HTTP routes, WebSocket payloads, and Teensy JSON protocol stay compatible.
   repeated `/api/state` and `HELLO` payloads cost ~1 µs.
 - Added `ply`, `halfmove_clock`, `fullmove_number` to the snapshot.
 
-### `host/app/api/routes.py` — single analysis path
+### `host/app/api/routes.py` — single analysis path + live settings
 - Removed the duplicate `_gm_*` analysis block (was running two engines).
 - `/api/engine/live` is now an alias for `/api/engine/analysis` (server-side
   semantic identical), backed by the persistent service.
 - New `/api/engine/bestmove` POST for direct best-move queries.
+- New `/api/engine/settings` GET/POST for live depth, search-time, MultiPV,
+  threads, and hash-memory tuning.
 - `LOCAL_MOVE_CANDIDATE` and `ROBOT_MOVE_COMPLETE` events now embed the full
   next-state snapshot, eliminating a follow-up GET round-trip from the UI.
 
@@ -84,6 +87,10 @@ HTTP routes, WebSocket payloads, and Teensy JSON protocol stay compatible.
 - One delegated click listener on `#chessboard` (was 64).
 - `requestAnimationFrame`-coalesced renders.
 - Engine refresh is debounced and keyed on the position FEN (no 3 s polling).
+- Engine controls now expose max depth (default 24, cap 30), per-depth search
+  time, MultiPV line count, threads, and Stockfish hash memory.
+- Move history and the AI coach live directly below the chessboard to use the
+  previously empty board-column space.
 - Sensor grid also built once, diffed on update.
 - WS exponential backoff (250 ms → 8 s cap).
 - ~300 lines shorter than the original despite more features.

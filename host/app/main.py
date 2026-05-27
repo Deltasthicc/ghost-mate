@@ -61,7 +61,6 @@ async def publish_live_engine_updates(app: FastAPI) -> None:
     """
     settings = app.state.settings
     interval_s = max(0.25, float(settings.engine_live_interval_s))
-    multipv = max(1, min(5, int(settings.engine_live_multipv)))
     active_key = None
     current_depth = 1
     search_started_at = 0.0
@@ -71,7 +70,9 @@ async def publish_live_engine_updates(app: FastAPI) -> None:
             requested_depths = getattr(app.state, "engine_live_depths", {})
             max_depth = settings.capped_engine_live_max_depth
             if requested_depths:
-                max_depth = max(1, min(15, max(requested_depths.values())))
+                max_depth = max(1, min(30, max(requested_depths.values())))
+            multipv = max(1, min(5, int(settings.engine_live_multipv)))
+            search_time_s = max(0.1, min(30.0, float(settings.engine_live_search_time_s)))
 
             if (
                 not settings.engine_live_push_enabled
@@ -90,6 +91,7 @@ async def publish_live_engine_updates(app: FastAPI) -> None:
             analysis = await app.state.stockfish.analysis(
                 board,
                 multipv=multipv,
+                time_s=search_time_s,
                 depth=current_depth,
                 use_cache=False,
             )
@@ -99,6 +101,10 @@ async def publish_live_engine_updates(app: FastAPI) -> None:
                 "max_depth": max_depth,
                 "is_final_depth": current_depth >= max_depth,
                 "search_elapsed_ms": search_elapsed_ms,
+                "search_time_s": search_time_s,
+                "multipv_requested": multipv,
+                "threads": app.state.stockfish.threads,
+                "hash_mb": app.state.stockfish.hash_mb,
             })
             await app.state.events.publish(Event(EventType.ENGINE_UPDATE, {"analysis": analysis}))
 

@@ -42,7 +42,8 @@ class Settings(BaseSettings):
     engine_live_push_enabled: bool = True
     engine_live_interval_s: float = 1.0
     engine_live_multipv: int = 5
-    engine_live_max_depth: int = 15
+    engine_live_max_depth: int = 24
+    engine_live_search_time_s: float = 2.0
     engine_threads: int | None = None  # None => CPU count - 1
     engine_hash_mb: int = 128
     engine_skill_level: int | None = None  # 0..20 to weaken Stockfish; None = full
@@ -67,7 +68,7 @@ class Settings(BaseSettings):
 
     @property
     def capped_engine_live_max_depth(self) -> int:
-        return max(1, min(15, int(self.engine_live_max_depth)))
+        return max(1, min(30, int(self.engine_live_max_depth)))
 
     @property
     def sqlite_path(self) -> Path | None:

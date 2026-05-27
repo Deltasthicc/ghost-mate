@@ -19,6 +19,8 @@ from host.app.domain.events import Event, EventType
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_MAX_ENGINE_DEPTH = 30
+_MAX_ENGINE_MULTIPV = 5
 
 
 def _cap_engine_depth(value: int | None, fallback: int = 15) -> int:
@@ -26,7 +28,39 @@ def _cap_engine_depth(value: int | None, fallback: int = 15) -> int:
         depth = int(value if value is not None else fallback)
     except (TypeError, ValueError):
         depth = fallback
-    return max(1, min(15, depth))
+    return max(1, min(_MAX_ENGINE_DEPTH, depth))
+
+
+def _cap_engine_multipv(value: int | None, fallback: int = 5) -> int:
+    try:
+        multipv = int(value if value is not None else fallback)
+    except (TypeError, ValueError):
+        multipv = fallback
+    return max(1, min(_MAX_ENGINE_MULTIPV, multipv))
+
+
+def _cap_engine_search_time(value: float | None, fallback: float = 2.0) -> float:
+    try:
+        time_s = float(value if value is not None else fallback)
+    except (TypeError, ValueError):
+        time_s = fallback
+    return max(0.1, min(30.0, time_s))
+
+
+def _cap_engine_threads(value: int | None, fallback: int) -> int:
+    try:
+        threads = int(value if value is not None else fallback)
+    except (TypeError, ValueError):
+        threads = fallback
+    return max(1, min(64, threads))
+
+
+def _cap_engine_hash_mb(value: int | None, fallback: int) -> int:
+    try:
+        hash_mb = int(value if value is not None else fallback)
+    except (TypeError, ValueError):
+        hash_mb = fallback
+    return max(16, min(4096, hash_mb))
 
 
 # ---------------------------------------------------------------- request bodies
@@ -53,6 +87,14 @@ class PgnRequest(BaseModel):
 class CoachRequest(BaseModel):
     question: str | None = None
     style: str = "student"
+
+
+class EngineSettingsRequest(BaseModel):
+    max_depth: int | None = None
+    search_time_s: float | None = None
+    multipv: int | None = None
+    threads: int | None = None
+    hash_mb: int | None = None
 
 
 # ---------------------------------------------------------------- helpers
@@ -197,18 +239,77 @@ async def _do_analysis(
 
 @router.get("/engine/analysis")
 async def engine_analysis(request: Request, multipv: int = 5) -> dict:
-    return await _do_analysis(request, multipv)
+    return await _do_analysis(request, _cap_engine_multipv(multipv))
 
 
 @router.get("/engine/live")
-async def engine_live(request: Request, multipv: int = 5, max_depth: int | None = None) -> dict:
+async def engine_live(
+    request: Request,
+    multipv: int = 5,
+    max_depth: int | None = None,
+    time_s: float | None = None,
+) -> dict:
+    settings = request.app.state.settings
     depth = _cap_engine_depth(max_depth, request.app.state.settings.capped_engine_live_max_depth)
-    return await _do_analysis(
+    capped_multipv = _cap_engine_multipv(multipv, settings.engine_live_multipv)
+    capped_time = _cap_engine_search_time(time_s, settings.engine_live_search_time_s)
+    analysis = await _do_analysis(
         request,
-        multipv,
+        capped_multipv,
+        time_s=capped_time,
         depth=depth,
         use_cache=False,
     )
+    analysis.update({
+        "max_depth": depth,
+        "search_time_s": capped_time,
+        "multipv_requested": capped_multipv,
+        "threads": request.app.state.stockfish.threads,
+        "hash_mb": request.app.state.stockfish.hash_mb,
+    })
+    return analysis
+
+
+@router.get("/engine/settings")
+async def engine_settings(request: Request) -> dict:
+    settings = request.app.state.settings
+    engine = request.app.state.stockfish
+    return {
+        "max_depth": settings.capped_engine_live_max_depth,
+        "max_depth_cap": _MAX_ENGINE_DEPTH,
+        "search_time_s": _cap_engine_search_time(
+            settings.engine_live_search_time_s,
+            settings.engine_live_search_time_s,
+        ),
+        "multipv": _cap_engine_multipv(settings.engine_live_multipv),
+        "multipv_cap": _MAX_ENGINE_MULTIPV,
+        "threads": engine.threads,
+        "hash_mb": engine.hash_mb,
+    }
+
+
+@router.post("/engine/settings")
+async def update_engine_settings(request: Request, body: EngineSettingsRequest) -> dict:
+    settings = request.app.state.settings
+    engine = request.app.state.stockfish
+
+    settings.engine_live_max_depth = _cap_engine_depth(
+        body.max_depth,
+        settings.capped_engine_live_max_depth,
+    )
+    settings.engine_live_search_time_s = _cap_engine_search_time(
+        body.search_time_s,
+        settings.engine_live_search_time_s,
+    )
+    settings.engine_live_multipv = _cap_engine_multipv(
+        body.multipv,
+        settings.engine_live_multipv,
+    )
+    next_threads = _cap_engine_threads(body.threads, engine.threads)
+    next_hash_mb = _cap_engine_hash_mb(body.hash_mb, engine.hash_mb)
+    await engine.configure_options(threads=next_threads, hash_mb=next_hash_mb)
+
+    return await engine_settings(request)
 
 
 @router.post("/engine/bestmove")

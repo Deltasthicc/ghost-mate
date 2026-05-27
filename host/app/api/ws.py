@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _HEARTBEAT_INTERVAL_S = 15.0
+_MAX_ENGINE_DEPTH = 30
 
 
 def _cap_engine_depth(raw: str | None, fallback: int = 15) -> int:
@@ -40,7 +41,7 @@ def _cap_engine_depth(raw: str | None, fallback: int = 15) -> int:
         depth = int(raw) if raw is not None else fallback
     except (TypeError, ValueError):
         depth = fallback
-    return max(1, min(15, depth))
+    return max(1, min(_MAX_ENGINE_DEPTH, depth))
 
 
 async def _maybe_await(value):

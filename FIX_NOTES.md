@@ -24,8 +24,14 @@ From the patched project root, with `DEBUG=release` still set:
 pytest host/tests/ -q
 ```
 
-Result in my run:
+Historical result from that fix run:
 
 ```text
 562 passed in 13.38s
+```
+
+Current full suite after the later UI, engine-settings, coach, and PGN work:
+
+```text
+859 passed
 ```

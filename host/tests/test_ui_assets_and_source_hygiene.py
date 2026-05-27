@@ -6,7 +6,7 @@ and the backend. They are intentionally cheap so they run on every commit.
 Coverage:
 - Index template renders and contains every element the JS depends on
 - Static JS file declares every function the dashboard binds
-- Static CSS file declares the layout selectors the new study grid needs
+- Static CSS file declares the layout selectors the board support layout needs
 - The coach module source contains *none* of the boilerplate phrases the
   user explicitly rejected
 - The JS no longer appends 'Source: ...' to the visible coach answer body
@@ -54,7 +54,7 @@ class TestIndexTemplateHttp:
         "position-loader",
         "load-fen",
         "load-pgn",
-        "study-grid",
+        "board-support-grid",
         "study-history",
         "study-tools",
         "study-coach",
@@ -74,7 +74,7 @@ class TestIndexTemplateFile:
         return _read(TEMPLATE_DIR / "index.html")
 
     @pytest.mark.parametrize("needle", [
-        '<section class="study-grid">',
+        '<section class="board-support-grid"',
         'id="move-history"',
         'id="fen-copy-field"',
         'id="pgn-copy-field"',
@@ -82,6 +82,7 @@ class TestIndexTemplateFile:
         'id="copy-pgn"',
         'id="download-pgn"',
         'id="ai-coach-panel"',
+        'id="coach-style"',
         'id="coach-source-pill"',
         'id="position-loader"',
     ])
@@ -118,6 +119,10 @@ class TestStaticJsContract:
         "reconnectWebSocket",
         "applyEngineAnalysis",
         "queuePgnRefresh",
+        "loadEngineSettings",
+        "saveEngineSettings",
+        "applyEngineSettings",
+        "bindEngineSettingControls",
     ])
     def test_js_declares_required_symbol(self, js, symbol):
         assert symbol in js, f"Expected '{symbol}' to be defined in app.js"
@@ -128,6 +133,9 @@ class TestStaticJsContract:
     def test_js_uses_ai_coach_endpoint(self, js):
         assert "/api/ai/coach" in js
 
+    def test_js_uses_engine_settings_endpoint(self, js):
+        assert "/api/engine/settings" in js
+
     def test_js_bind_block_wires_new_buttons(self, js):
         for binding in (
             'el("copy-fen")?.addEventListener',
@@ -136,6 +144,7 @@ class TestStaticJsContract:
             'el("ask-coach")?.addEventListener',
             'el("load-fen")?.addEventListener',
             'el("load-pgn")?.addEventListener',
+            'el("ask-coach")?.addEventListener',
         ):
             assert binding in js
 
@@ -161,7 +170,7 @@ class TestStaticCssContract:
         return _read(STATIC_DIR / "style.css")
 
     @pytest.mark.parametrize("selector", [
-        ".study-grid",
+        ".board-support-grid",
         ".study-history",
         ".study-tools",
         ".study-coach",
@@ -176,6 +185,9 @@ class TestStaticCssContract:
         ".panel.inset",
         ".position-loader-card",
         ".engine-controls",
+        ".engine-stat-grid",
+        ".coach-toolbar",
+        ".select-input",
         ".coach-answer",
     ])
     def test_css_defines_selector(self, css, selector):

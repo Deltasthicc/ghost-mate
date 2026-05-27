@@ -29,10 +29,11 @@ class _Settings:
         self.engine_live_interval_s = interval_s
         self.engine_live_multipv = multipv
         self.engine_live_max_depth = max_depth
+        self.engine_live_search_time_s = 0.1
 
     @property
     def capped_engine_live_max_depth(self) -> int:
-        return max(1, min(15, int(self.engine_live_max_depth)))
+        return max(1, min(30, int(self.engine_live_max_depth)))
 
 
 class _FakeStockfish:
@@ -41,8 +42,10 @@ class _FakeStockfish:
         self.calls: list[tuple[str, int]] = []
         self.raise_on_depth = raise_on_depth
         self.raise_count = raise_count
+        self.threads = 1
+        self.hash_mb = 128
 
-    async def analysis(self, board, *, multipv, depth, use_cache):
+    async def analysis(self, board, *, multipv, depth, use_cache, time_s=None):
         self.calls.append((board.fen(), depth))
         if self.raise_count > 0 and depth == self.raise_on_depth:
             self.raise_count -= 1
@@ -84,9 +87,10 @@ class TestCapEngineDepth:
         (1, 1),
         (8, 8),
         (15, 15),
-        (16, 15),
+        (16, 16),
+        (30, 30),
         (-99, 1),
-        (99, 15),
+        (99, 30),
     ])
     def test_route_cap(self, value, expected):
         assert _cap_route_depth(value) == expected
@@ -96,7 +100,8 @@ class TestCapEngineDepth:
         ("0", 1),
         ("8", 8),
         ("15", 15),
-        ("99", 15),
+        ("30", 30),
+        ("99", 30),
         ("not a number", 15),
         ("", 15),
     ])
@@ -105,7 +110,7 @@ class TestCapEngineDepth:
 
     def test_route_cap_with_custom_fallback(self):
         assert _cap_route_depth(None, fallback=4) == 4
-        assert _cap_route_depth(None, fallback=99) == 15  # fallback also clamped
+        assert _cap_route_depth(None, fallback=99) == 30  # fallback also clamped
 
 
 # ─────────────────────────────────────────────────────────────────────────────

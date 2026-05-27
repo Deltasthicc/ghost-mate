@@ -92,34 +92,80 @@
     </section>
 
     <section class="workspace">
-      <article class="panel board-panel">
-        <div class="section-head">
-          <div>
-            <p class="section-tag">board</p>
-            <h2>Live Position</h2>
+      <div class="board-stack">
+        <article class="panel board-panel">
+          <div class="section-head">
+            <div>
+              <p class="section-tag">board</p>
+              <h2>Live Position</h2>
+            </div>
+
+            <div class="button-row">
+              <button id="flip-board" class="btn btn-mini" type="button">Flip</button>
+              <button id="clear-selection" class="btn btn-mini" type="button">Clear</button>
+            </div>
           </div>
 
-          <div class="button-row">
-            <button id="flip-board" class="btn btn-mini" type="button">Flip</button>
-            <button id="clear-selection" class="btn btn-mini" type="button">Clear</button>
+          <div class="board-zone">
+            <div class="rank-labels" id="rank-labels"></div>
+            <div class="chessboard" id="chessboard" aria-label="Chessboard"></div>
           </div>
-        </div>
 
-        <div class="board-zone">
-          <div class="rank-labels" id="rank-labels"></div>
-          <div class="chessboard" id="chessboard" aria-label="Chessboard"></div>
-        </div>
+          <div class="file-labels" id="file-labels"></div>
 
-        <div class="file-labels" id="file-labels"></div>
-
-        <div class="selection-bar">
-          <div class="selection-copy">
-            <span>Selected move</span>
-            <strong id="selected-move">Click a piece, then a target square</strong>
+          <div class="selection-bar">
+            <div class="selection-copy">
+              <span>Selected move</span>
+              <strong id="selected-move">Click a piece, then a target square</strong>
+            </div>
+            <button id="submit-selected" class="btn btn-soft" type="button">Submit</button>
           </div>
-          <button id="submit-selected" class="btn btn-soft" type="button">Submit</button>
-        </div>
-      </article>
+        </article>
+
+        <section class="board-support-grid" aria-label="Position study tools">
+          <article class="panel study-history">
+            <div class="section-head">
+              <div>
+                <p class="section-tag">notation</p>
+                <h2>Move History</h2>
+              </div>
+              <div class="button-row">
+                <span id="move-history-count" class="status-chip">0 plies</span>
+              </div>
+            </div>
+
+            <div id="move-history" class="move-history" role="list" aria-label="Move history">
+              <p class="hint move-history-empty">No moves yet. Play a move on the board or load a PGN.</p>
+            </div>
+          </article>
+
+          <article class="panel study-coach" id="ai-coach-panel">
+            <div class="section-head">
+              <div>
+                <p class="section-tag">ai coach</p>
+                <h2>Ask About This Position</h2>
+              </div>
+              <span id="coach-source-pill" class="status-chip">local</span>
+            </div>
+
+            <textarea id="coach-question" class="position-text coach-question"
+              placeholder="Ask why the top move works, what plan to follow, or how to explain this to a student."></textarea>
+            <div class="coach-toolbar">
+              <label>
+                Coach style
+                <select id="coach-style" class="select-input">
+                  <option value="student">Student</option>
+                  <option value="coach">Coach</option>
+                  <option value="grandmaster">Grandmaster</option>
+                  <option value="brief">Brief</option>
+                </select>
+              </label>
+              <button id="ask-coach" class="btn btn-primary" type="button">Ask Coach</button>
+            </div>
+            <pre id="coach-answer" class="coach-answer">Coach output will appear here.</pre>
+          </article>
+        </section>
+      </div>
 
       <aside class="sidebar">
         <article class="panel side-card">
@@ -162,25 +208,6 @@
           <input id="move-filter" class="filter-input" placeholder="Filter legal moves..." />
           <div id="legal-moves" class="scroll-chips"></div>
         </article>
-      </aside>
-    </section>
-
-    <section class="study-grid">
-      <article class="panel study-history">
-        <div class="section-head">
-          <div>
-            <p class="section-tag">notation</p>
-            <h2>Move History</h2>
-          </div>
-          <div class="button-row">
-            <span id="move-history-count" class="status-chip">0 plies</span>
-          </div>
-        </div>
-
-        <div id="move-history" class="move-history" role="list" aria-label="Move history">
-          <p class="hint move-history-empty">No moves yet. Play a move on the board or load a PGN.</p>
-        </div>
-      </article>
 
       <article class="panel study-tools">
         <div class="section-head">
@@ -221,22 +248,7 @@
         </article>
       </article>
 
-      <article class="panel study-coach" id="ai-coach-panel">
-        <div class="section-head">
-          <div>
-            <p class="section-tag">ai coach</p>
-            <h2>Ask About This Position</h2>
-          </div>
-          <span id="coach-source-pill" class="status-chip">local</span>
-        </div>
-
-        <textarea id="coach-question" class="position-text"
-          placeholder="Ask why the top move works, what plan to follow, or how to explain this to a student."></textarea>
-        <div class="button-row">
-          <button id="ask-coach" class="btn btn-primary" type="button">Ask Coach</button>
-        </div>
-        <pre id="coach-answer" class="coach-answer">Coach output will appear here.</pre>
-      </article>
+      </aside>
     </section>
 
     <section class="ops-grid">
